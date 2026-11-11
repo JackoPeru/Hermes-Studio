@@ -37,6 +37,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.hermes.studio.*
 import com.hermes.studio.update.AppUpdateManager
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 // ---------- Design system (dai mockup approvati) ----------
