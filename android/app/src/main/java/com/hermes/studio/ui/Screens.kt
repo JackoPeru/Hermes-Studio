@@ -820,8 +820,7 @@ fun LibraryScreen(repo: StudioRepo, onReuse: (String) -> Unit) {
                     Box(Modifier.size(150.dp, 130.dp)) {
                         if (req != null && loader != null) {
                             AsyncImage(
-                                model = req, imageLoader = loader!!,
-                                imageLoader = loader!!, contentDescription = p.name,
+                                model = req, imageLoader = loader!!, contentDescription = p.name,
                                 modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                             )
                         } else {
