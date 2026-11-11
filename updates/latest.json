@@ -5,7 +5,7 @@
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-17/HermesStudio-17.apk",
   "assetSize": 18912717,
   "sha256": "5c6bc88b0ddac029b0f14d7d7a36a145252fde250b60269e5b1d2dfe2bd42fed",
-  "signature": "",
+  "signature": "MEYCIQCbmMBm4fVY+PQTNjH3XoaCh4xfdeTVHp0HJD8VeB7uyQIhALRrXklJ4CIpA6f5sZFAGFq5Sshakdt7KsHe3yaz4SGc=",
   "publishedAt": "2026-11-11T19:20:10Z",
   "notes": ["V1 + auto-update in-app"]
 }
