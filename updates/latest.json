@@ -1,11 +1,11 @@
 {
-  "versionCode": 16,
-  "versionName": "0.1.1-gh16",
-  "tagName": "studio-16",
-  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-16/HermesStudio-16.apk",
+  "versionCode": 17,
+  "versionName": "0.1.1-gh17",
+  "tagName": "studio-17",
+  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-17/HermesStudio-17.apk",
   "assetSize": 18912717,
-  "sha256": "cbfcfc05934b17b902c8780b5092dab27b34783adf755df253cf7a6974dbc6cc",
-  "signature": "MEUCIDMfANjDh0RlKZNuuLRwmZ5gJYmpC6h9bvRwvF+w8ThcAiEA3DsItphBuv+A/3kn+uxXsBuar0m+ickpcbePYD3z/Ls=",
-  "publishedAt": "2026-11-11T19:05:10Z",
+  "sha256": "5c6bc88b0ddac029b0f14d7d7a36a145252fde250b60269e5b1d2dfe2bd42fed",
+  "signature": "",
+  "publishedAt": "2026-11-11T19:20:10Z",
   "notes": ["V1 + auto-update in-app"]
 }
