@@ -1,11 +1,11 @@
 {
-  "versionCode": 19,
-  "versionName": "0.1.1-gh19",
-  "tagName": "studio-19",
-  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-19/HermesStudio-19.apk",
-  "assetSize": 18994733,
-  "sha256": "0fb4eec657955253e33a2b9104f2e4cf8f2048c7f6b020168ed2838cbf16b147",
-  "signature": "MEYCIQC9PvVyvJRreeR3jqUTVEr8+xqZoJL+qW9CXBrkGtUCvwIhAIiZzMp0FvermG2+GS9hBN0bHOtxyrtP1lU3HqhtEh+W",
-  "publishedAt": "2026-11-11T21:36:00Z",
+  "versionCode": 20,
+  "versionName": "0.1.1-gh20",
+  "tagName": "studio-20",
+  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-20/HermesStudio-20.apk",
+  "assetSize": 19011117,
+  "sha256": "e47a3c9adef1b1183808c94cf8a7b4a8bab453507b76db1662baff1cce2942c5",
+  "signature": "",
+  "publishedAt": "2026-11-11T22:44:18Z",
   "notes": ["V1 + auto-update in-app"]
 }
