@@ -506,7 +506,7 @@ class AppUpdateManager(private val appContext: Context) {
         private const val KEY_AUTO_CHECK_ENABLED = "auto_check_enabled"
         private const val KEY_LAST_NOTIFIED_VERSION = "last_notified_version"
         private const val KEY_LAST_RELEASE_JSON = "last_release_json"
-        const val PUBLIC_UPDATE_FEED_URL = "https://raw.githubusercontent.com/JackoPeru/HermesStudio-updates/main/latest.json"
+        const val PUBLIC_UPDATE_FEED_URL = "https://raw.githubusercontent.com/JackoPeru/Hermes-Studio/main/updates/latest.json"
         private const val UPDATE_WORK_NAME = "hermes_studio_auto_update"
         private const val UPDATE_CHANNEL_ID = "hermes_studio_updates"
         private const val UPDATE_NOTIFICATION_ID = 4201

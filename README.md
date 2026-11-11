@@ -33,7 +33,7 @@ ruff check backend tests
 ```
 
 ## App
-Apri `android/` in Android Studio (se manca il wrapper: `gradle wrapper`), imposta backend+token in Impostazioni, build `assembleDebug`. La coda sopravvive a chiusura app (stato dal server). Release firmata + auto-update da GitHub: vedi `docs/UPDATE.md` + workflow `Build And Publish Release APK`.
+Apri `android/` in Android Studio (se manca il wrapper: `gradle wrapper`), imposta backend+token in Impostazioni, build `assembleDebug`. La coda sopravvive a chiusura app (stato dal server). Build con firma stabile + auto-update in-app: vedi `docs/UPDATE.md` + workflow `Build And Publish Release APK` (feed `updates/latest.json` nella stessa repo).
 
 ## Limiti V1 onesti
 - Solo `text-to-image` Qwen (edit/reference disabilitato finché non validato).

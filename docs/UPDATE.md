@@ -1,32 +1,50 @@
 # Auto-update in-app (classico HermesHub / UniNote)
 
-Stesso pattern di UniNote + HermesHub, adattato a `com.hermes.studio`:
+Stesso pattern di UniNote + HermesHub, adattato a `com.hermes.studio`.
+Il feed vive **nella stessa repo** (pubblica): `updates/latest.json`
+(raw: `https://raw.githubusercontent.com/JackoPeru/Hermes-Studio/main/updates/latest.json`),
+come HermesHub che legge le release dalla propria repo. Niente seconda repo
+(UniNote la usa solo perché la sua primaria è privata).
 
-- Feed pubblico: `https://raw.githubusercontent.com/JackoPeru/HermesStudio-updates/main/latest.json`
+- Feed: `updates/latest.json`
   (`versionCode, versionName, tagName, apkUrl, assetSize, sha256, signature, notes`).
 - Firma fail-closed ECDSA P-256 su manifest canonico
   `hermes-studio-update-v1\nCODE\nNAME\nURL\nSIZE\nSHA` (`update/UpdateReleaseSigner.kt`).
-  Senza chiave pubblica configurata o firma invalida → update rifiutato, mai installato.
+  Senza firma valida → update rifiutato, mai installato.
 - Download `.part` → rename atomico, verifica size + SHA-256, riverifica a tap Install.
 - Signing identity: l'APK deve condividere un firmatario con l'app installata.
+  Tutti i build (CI debug + release) usano lo **stesso keystore stabile**
+  (`HERMES_KEYSTORE_*` nei secrets + `signingConfigs/stable` in `app/build.gradle.kts`),
+  quindi la catena degli update non si rompe mai. Build locali senza env usano
+  la debug-key di default (invariati).
 - Rollback: conserva max 2 APK (nuovo + installato), UI "Torna a X".
 - Background: `WorkManager` ogni 6h + notifica (opt-out in Impostazioni).
 - Permessi: `REQUEST_INSTALL_PACKAGES` + `FileProvider` (`res/xml/file_paths.xml`).
 
-## Setup maintainer (una tantum)
+## Chiavi (generate 2026-11-11, MAI nel repo)
 
-1. `openssl ecparam -genkey -name prime256v1 -noout -out hermes-studio-update-sign.key` (SOLO locale, mai nel repo).
-2. `openssl ec -in hermes-studio-update-sign.key -pubout -outform DER | base64 -w0` → incolla in
-   `UpdateReleaseSigner.RELEASE_SIGNING_PUBLIC_KEY_SPKI_B64`.
-3. Crea repo pubblico `JackoPeru/HermesStudio-updates` (vuoto, con `README.md`).
-4. Lancia `Build And Publish Release APK` (workflow_dispatch) → pubblica `latest.json` con `signature: ""`.
-5. Firma in locale:
+- Feed priv: `Documents/HermesStudio-update-keys/hermes-studio-update-sign.key`
+- Feed pubb (SPKI b64 in `UpdateReleaseSigner`): fingerprint
+  `91e247fd0c04e5b74cf7ea733625f2f6348ed3d1dc8fd527e0327a07a9a97fe7`
+- APK keystore: `Documents/HermesStudio-update-keys/hermes-studio-apk.keystore`
+  + `HERMES_KEYSTORE_*` nei GitHub secrets. Backup della cartella = backup del canale update.
+- Smarrire la chiave feed = rigenerare coppia + reinstallazione pulita.
+
+## Pubblicare un update
+
+1. Lancia `Build And Publish Release APK` (workflow_dispatch): compila il debug
+   firmato stabile con `versionCode = 10 + run_number`, crea la GitHub release
+   **nella stessa repo** e aggiorna `updates/latest.json` con `signature: ""`.
+2. Firma in locale:
    `printf 'hermes-studio-update-v1\n%s\n%s\n%s\n%s\n%s' CODE NAME URL SIZE SHA | openssl dgst -sha256 -sign hermes-studio-update-sign.key | base64 -w0`
-   compila `signature` in `latest.json` nel repo updates, push.
-6. Test: Impostazioni → Controlla ora → Scarica → Installa. Smarrire la chiave = rigenerare + reinstallazione pulita.
+   usando i valori stampati dal workflow (`MANIFEST-DA-FIRMARE`).
+3. Compila `signature` in `updates/latest.json`, commit + push.
+4. Test: Impostazioni → Controlla ora → Scarica → Installa.
 
-## Note V1
+## Nota primo passaggio (2026-11-11)
 
-Finché `RELEASE_SIGNING_PUBLIC_KEY_SPKI_B64` è vuota, l'app mostra
-"Canale update senza chiave di firma configurata" e rifiuta ogni update remoto.
-È il comportamento voluto (fail-closed), identico a UniNote dopo la rotazione chiave 2026-10-03.
+Il build `v0.1.1-test.1` era firmato con la debug-key effimera della CI,
+quello da `test.2` in poi con il keystore stabile: **firme diverse = Android
+blocca l'update diretto**. Disinstallare test.1, installare test.2 manualmente
+una volta (si perdono URL/token in DataStore: rifare il pairing), poi gli
+update tornano automatici via app.

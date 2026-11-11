@@ -4,6 +4,21 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Versioni da CI/release (vedi .github/workflows/*.yml); fallback per build locali.
+val envVersionCode = System.getenv("HERMES_VERSION_CODE")?.toIntOrNull()
+val envVersionName = System.getenv("HERMES_VERSION_NAME")
+// Firma stabile condivisa da debug+release: l'updater in-app richiede che
+// l'APK scaricato condivida il firmatario con quello installato. Senza env
+// (build locali) si usa la debug-key di default, invariato.
+val stableStoreFile = System.getenv("HERMES_KEYSTORE_PATH")
+val stableStorePassword = System.getenv("HERMES_KEYSTORE_PASSWORD")
+val stableKeyAlias = System.getenv("HERMES_KEY_ALIAS")
+val stableKeyPassword = System.getenv("HERMES_KEY_PASSWORD")
+val hasStableSigning = !stableStoreFile.isNullOrBlank() &&
+    !stableStorePassword.isNullOrBlank() &&
+    !stableKeyAlias.isNullOrBlank() &&
+    !stableKeyPassword.isNullOrBlank()
+
 android {
     namespace = "com.hermes.studio"
     compileSdk = 35
@@ -12,14 +27,31 @@ android {
         applicationId = "com.hermes.studio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = envVersionCode ?: 2
+        versionName = envVersionName ?: "0.1.1"
+    }
+    signingConfigs {
+        if (hasStableSigning) {
+            create("stable") {
+                storeFile = file(stableStoreFile!!)
+                storePassword = stableStorePassword
+                keyAlias = stableKeyAlias
+                keyPassword = stableKeyPassword
+            }
+        }
     }
     buildTypes {
-        debug { }
+        debug {
+            if (hasStableSigning) {
+                signingConfig = signingConfigs.getByName("stable")
+            }
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (hasStableSigning) {
+                signingConfig = signingConfigs.getByName("stable")
+            }
         }
     }
     buildFeatures { compose = true }

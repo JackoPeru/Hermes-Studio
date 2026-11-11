@@ -23,12 +23,14 @@ import java.util.Base64
 object UpdateReleaseSigner {
     /**
      * SPKI pubblica P-256 (DER, base64) del canale update Hermes Studio.
-     * DA CONFIGURARE dal maintainer prima di pubblicare il primo update pubblico.
-     * Finche' resta vuota, ogni update remoto e' rifiutato (fail-closed) e la UI
-     * mostra "Canale update senza chiave di firma".
-     * Chiave privata: SOLO nel file del maintainer (mai nel repo).
+     * Generata 2026-11-11 dal maintainer, privata SOLO in
+     * `Documents/HermesStudio-update-keys/hermes-studio-update-sign.key` (mai nel repo).
+     * Fingerprint SHA-256 SPKI: 91e247fd0c04e5b74cf7ea733625f2f6348ed3d1dc8fd527e0327a07a9a97fe7.
+     * Smarrirla = rigenerare coppia + reinstallazione pulita (i client vecchi
+     * rifiutano feed firmati con la nuova chiave).
      */
-    const val RELEASE_SIGNING_PUBLIC_KEY_SPKI_B64 = ""
+    const val RELEASE_SIGNING_PUBLIC_KEY_SPKI_B64 =
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEv3ZgFmbbNAeGeo4OkEpEMA7l48vJQRf5QLF73o/W2RrX3qsc6+hvzbqqAUHMlzuBZeOJ5SplbrES4/aJogAEjA=="
 
     fun canonicalManifest(release: AppUpdateRelease): String = listOf(
         "hermes-studio-update-v1",

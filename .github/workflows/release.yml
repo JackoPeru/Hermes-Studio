@@ -1,66 +1,84 @@
 name: Build And Publish Release APK
+
 on:
   workflow_dispatch:
+
 concurrency:
   group: hermes-studio-release-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
   release:
     runs-on: ubuntu-latest
-    permissions: { contents: write }
+    permissions:
+      contents: write
     env:
       HERMES_KEYSTORE_PATH: ${{ github.workspace }}/keystore.jks
       HERMES_KEYSTORE_PASSWORD: ${{ secrets.HERMES_KEYSTORE_PASSWORD }}
       HERMES_KEY_ALIAS: ${{ secrets.HERMES_KEY_ALIAS }}
       HERMES_KEY_PASSWORD: ${{ secrets.HERMES_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v5
-        with: { fetch-depth: 50, fetch-tags: true }
-      - uses: actions/setup-java@v5
-        with: { distribution: temurin, java-version: "17" }
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Compute release version
         shell: bash
         run: |
-          CODE=$((2 + GITHUB_RUN_NUMBER))
+          CODE=$((10 + GITHUB_RUN_NUMBER))
           echo "HERMES_VERSION_CODE=$CODE" >> "$GITHUB_ENV"
           echo "HERMES_VERSION_NAME=0.1.1-gh$CODE" >> "$GITHUB_ENV"
+
       - name: Decode keystore
         shell: bash
-        run: echo "${{ secrets.HERMES_KEYSTORE_BASE64 }}" | base64 --decode > "$HERMES_KEYSTORE_PATH"
-      - name: Build release APK
+        run: |
+          echo "${{ secrets.HERMES_KEYSTORE_BASE64 }}" | base64 --decode > "$HERMES_KEYSTORE_PATH"
+
+      - name: Build debug APK (firma stabile, versionCode release)
         working-directory: android
         run: |
           if [ ! -f ./gradlew ]; then gradle wrapper --gradle-version 8.9; fi
           chmod +x ./gradlew
-          ./gradlew assembleRelease --build-cache
+          ./gradlew assembleDebug --build-cache
+
       - name: Prepare APK asset
         shell: bash
-        run: cp android/app/build/outputs/apk/release/app-release.apk HermesStudio-release.apk
-      - name: Publish GitHub release
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk "HermesStudio-${HERMES_VERSION_CODE}.apk"
+
+      - name: Publish GitHub release (stessa repo, pubblica)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "studio-${HERMES_VERSION_CODE}" "HermesStudio-release.apk" \
-            --repo "${GITHUB_REPOSITORY}" \
+          gh release create "studio-${HERMES_VERSION_CODE}" "HermesStudio-${HERMES_VERSION_CODE}.apk" \
             --title "Hermes Studio ${HERMES_VERSION_NAME} (${HERMES_VERSION_CODE})" \
-            --notes "V1 + in-app update. Vedi docs/UPDATE.md." --latest
-      - name: Publish public update feed
+            --notes "V1 + auto-update in-app (feed updates/latest.json, stessa repo)." \
+            --latest
+
+      - name: Update same-repo update feed
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.HERMES_PUBLIC_UPDATES_TOKEN }}
-          PUBLIC_UPDATES_REPO: JackoPeru/HermesStudio-updates
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TAG="studio-${HERMES_VERSION_CODE}"
-          APK_SIZE="$(stat -c%s "${GITHUB_WORKSPACE}/HermesStudio-release.apk")"
-          APK_SHA="$(sha256sum "${GITHUB_WORKSPACE}/HermesStudio-release.apk" | cut -d' ' -f1)"
-          APK_URL="https://github.com/${PUBLIC_UPDATES_REPO}/releases/download/${TAG}/HermesStudio-release.apk"
-          WORK_DIR="$(mktemp -d)"
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/${PUBLIC_UPDATES_REPO}.git" "${WORK_DIR}/updates"
-          cd "${WORK_DIR}/updates"
-          cat > latest.json <<EOF
+          APK_NAME="HermesStudio-${HERMES_VERSION_CODE}.apk"
+          APK_SIZE="$(stat -c%s "${GITHUB_WORKSPACE}/${APK_NAME}")"
+          APK_SHA="$(sha256sum "${GITHUB_WORKSPACE}/${APK_NAME}" | cut -d' ' -f1)"
+          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${APK_NAME}"
+          mkdir -p "${GITHUB_WORKSPACE}/updates"
+          cat > "${GITHUB_WORKSPACE}/updates/latest.json" <<EOF
           {
             "versionCode": ${HERMES_VERSION_CODE},
             "versionName": "${HERMES_VERSION_NAME}",
@@ -70,13 +88,17 @@ jobs:
             "sha256": "${APK_SHA}",
             "signature": "",
             "publishedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "notes": ["V1 + auto-update"]
+            "notes": ["V1 + auto-update in-app"]
           }
           EOF
           echo "MANIFEST-DA-FIRMARE: hermes-studio-update-v1 | ${HERMES_VERSION_CODE} | ${HERMES_VERSION_NAME} | ${APK_URL} | ${APK_SIZE} | ${APK_SHA}"
+          echo "Il maintainer firma il manifest in locale e compila signature in updates/latest.json:"
+          echo "printf 'hermes-studio-update-v1\n%s\n%s\n%s\n%s\n%s' CODE NAME URL SIZE SHA | openssl dgst -sha256 -sign hermes-studio-update-sign.key | base64 -w0"
           echo "Senza signature valida l'app rifiuta l'update (fail-closed, UpdateReleaseSigner)."
-          echo "Firma: printf 'hermes-studio-update-v1\n%s\n%s\n%s\n%s\n%s' CODE NAME URL SIZE SHA | openssl dgst -sha256 -sign hermes-studio-update-sign.key | base64 -w0"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add latest.json
-          if ! git diff --cached --quiet; then git commit -m "Publish update ${HERMES_VERSION_CODE}"; git push origin HEAD:main; fi
+          git add updates/latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish update ${HERMES_VERSION_CODE} (firma da completare)"
+            git push origin HEAD:main
+          fi
