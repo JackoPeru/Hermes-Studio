@@ -5,7 +5,7 @@
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-13/HermesStudio-13.apk",
   "assetSize": 18830797,
   "sha256": "7a6e44a7ec75425d839b5d7509ceb14dcb5d66c94cc25031198eaf9610e9d906",
-  "signature": "",
+  "signature": "MEQCIFiAZEkrJIeFCCeqPQPj/OrqAvZ8pCFFmXvXPwCzGnJiAiA4dNs074RAWB6JfRXZLEYWpWtF+nO9H+aBWR/hn23U2A==",
   "publishedAt": "2026-11-11T17:46:25Z",
   "notes": ["V1 + auto-update in-app"]
 }
