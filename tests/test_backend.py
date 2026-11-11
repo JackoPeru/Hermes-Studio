@@ -71,25 +71,22 @@ def test_video_rejected_409(client):
     assert r.status_code == 422
 
 def test_video_enqueue_uses_manager_preset(client, monkeypatch):
-    import app.main as m
-    submitted = {}
-    class FakeMgr:
-        async def submit_video(self, preset, params):
-            submitted.update(preset=preset, params=params)
-            return {"job_id": "m1", "status": "queued", "preset": preset}
-        async def get_job(self, mid):
-            raise AssertionError("poll non atteso in enqueue")
-        async def cancel_job(self, mid):
-            return {"job_id": mid, "status": "cancelled"}
-    monkeypatch.setattr(m, "_manager", lambda: FakeMgr())
+    import app.db as dbmod
     aid = _seed_asset(client)
     r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "onde lente",
                                           "asset_ids": [aid], "width": 1344, "height": 768})
     assert r.status_code == 201, r.text
     j = r.json()
     assert j["taskType"] == "video" and j["status"] == "queued"
-    assert submitted["preset"] == "journey_video_preview"
-    assert submitted["params"]["input_images"] and submitted["params"]["input_images"][0].endswith(".png")
+    # L'enqueue mappa già preset e start frame (il submit al manager lo fa il worker).
+    cx = dbmod.connect()
+    try:
+        row = cx.execute("SELECT params FROM jobs WHERE id=?", (j["id"],)).fetchone()
+    finally:
+        cx.close()
+    p = json.loads(row["params"])
+    assert p["video_preset"] == "journey_video_preview"
+    assert p["asset_ids"] == [aid]
 
 def test_upload_limits_and_sniffing(client):
     big = b"\xff\xd8\xff" + b"0" * 10
@@ -177,18 +174,13 @@ def test_get_and_delete_asset(client):
 
 @pytest.mark.asyncio
 async def test_video_worker_done_path(client, tmp_path, monkeypatch):
+    # Worker completo con manager finto: nessun render reale, nessun ffmpeg.
+    # ffprobe/ffmpeg assenti -> probe {} e thumb None, senza eccezioni (fail-soft).
     import asyncio as _aio
-    import shutil
     import app.db as dbmod
     import app.main as m
-    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
-        pytest.skip("ffmpeg/ffprobe assenti")
     mp4 = tmp_path / "clip.mp4"
-    import subprocess as _sp
-    _sp.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=10",
-         "-pix_fmt", "yuv420p", str(mp4)], capture_output=True, timeout=60)
-    assert mp4.is_file(), "ffmpeg non ha generato il clip"
+    mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"0" * 2048)
     aid = _seed_asset(client)
     jid = dbmod.new_id("job")
     cx = dbmod.connect()
@@ -205,6 +197,7 @@ async def test_video_worker_done_path(client, tmp_path, monkeypatch):
         cx.close()
     class FakeMgr:
         async def submit_video(self, preset, params):
+            assert params["input_images"] and params["input_images"][0].endswith(".png")
             return {"job_id": "mid9", "status": "queued", "preset": preset}
         async def get_job(self, mid):
             assert mid == "mid9"
@@ -225,8 +218,8 @@ async def test_video_worker_done_path(client, tmp_path, monkeypatch):
         assert len(outs) == 1
         a = cx.execute("SELECT * FROM assets WHERE id=?", (outs[0],)).fetchone()
         assert a["kind"] == "video"
-        assert a["duration"] and a["duration"] > 0
+        rel = a["rel_path"]
     finally:
         cx.close()
     import app.config as cfg
-    assert (cfg.THUMBS_DIR / (outs[0] + ".jpg")).is_file()
+    assert (cfg.ASSETS_DIR / rel).is_file()
