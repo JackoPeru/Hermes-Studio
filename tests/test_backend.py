@@ -117,3 +117,36 @@ def test_status_shape(client):
     assert r.status_code == 200
     j = r.json()
     assert "queue_length" in j and "storage" in j
+
+def _seed_asset(client):
+    import app.db as dbmod
+    import app.config as cfg
+    from PIL import Image
+    aid = dbmod.new_id("ast")
+    rel = aid + "_seed.png"
+    p = cfg.ASSETS_DIR / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (64, 32), "red").save(p)
+    cx = dbmod.connect()
+    try:
+        cx.execute(
+            "INSERT INTO assets(id,kind,rel_path,job_id,width,height,created_at) VALUES(?,?,?,?,?,?,?)",
+            (aid, "image", rel, None, 64, 32, dbmod.now()),
+        )
+        cx.commit()
+    finally:
+        cx.close()
+    return aid
+
+def test_get_and_delete_asset(client):
+    aid = _seed_asset(client)
+    r = client.get(f"/api/v1/assets/{aid}")
+    assert r.status_code == 200
+    assert r.json()["width"] == 64
+    assert client.get("/api/v1/assets/nope").status_code == 404
+    assert client.post(f"/api/v1/assets/{aid}/favorite?on=true").status_code == 200
+    d = client.delete(f"/api/v1/assets/{aid}")
+    assert d.status_code == 200
+    assert client.get(f"/api/v1/assets/{aid}").status_code == 404
+    assert client.get(f"/api/v1/assets/{aid}/download").status_code == 404
+    assert client.delete(f"/api/v1/assets/{aid}").status_code == 404

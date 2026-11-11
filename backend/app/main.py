@@ -494,6 +494,26 @@ async def list_assets(kind: str | None = None, favorite: bool = False,
         cx.close()
 
 
+def _asset_row_to_out(r) -> AssetOut:
+    th = THUMBS_DIR / (r["id"] + ".jpg")
+    return AssetOut(id=r["id"], kind=r["kind"], path=f"/api/v1/assets/{r['id']}/download",
+                    thumb=f"/api/v1/assets/{r['id']}/thumbnail" if th.exists() else None,
+                    job_id=r["job_id"], width=r["width"], height=r["height"],
+                    created_at=db.iso(r["created_at"]))
+
+
+@app.get("/api/v1/assets/{aid}", response_model=AssetOut)
+async def get_asset(aid: str, _: None = Depends(require_auth)):
+    cx = db.connect()
+    try:
+        r = cx.execute("SELECT * FROM assets WHERE id=?", (aid,)).fetchone()
+        if not r:
+            raise HTTPException(404, "asset not found")
+        return _asset_row_to_out(r)
+    finally:
+        cx.close()
+
+
 def _asset_path(aid: str) -> Path:
     cx = db.connect()
     try:
@@ -542,6 +562,41 @@ async def fav_asset(aid: str, on: bool = True, _: None = Depends(require_auth)):
         return {"ok": True, "favorite": on}
     finally:
         cx.close()
+
+
+@app.delete("/api/v1/assets/{aid}")
+async def delete_asset(aid: str, _: None = Depends(require_auth)):
+    """Elimina asset + file + thumbnail + riferimenti (preferiti, progetti).
+
+    Conservativa altrove: i job restano (outputs punta a id rimossi),
+    nessun output utente viene toccato senza questa chiamata esplicita.
+    """
+    cx = db.connect()
+    try:
+        r = cx.execute("SELECT * FROM assets WHERE id=?", (aid,)).fetchone()
+        if not r:
+            raise HTTPException(404, "asset not found")
+        rel = r["rel_path"]
+        cx.execute("DELETE FROM favorites WHERE asset_id=?", (aid,))
+        cx.execute("DELETE FROM project_assets WHERE asset_id=?", (aid,))
+        cx.execute("DELETE FROM assets WHERE id=?", (aid,))
+        cx.commit()
+    finally:
+        cx.close()
+    # File system dopo il commit DB: mai orfani in DB se il disco fallisce.
+    try:
+        p = (ASSETS_DIR / safe_name(rel))
+        if p.is_file():
+            p.unlink()
+    except OSError:
+        pass
+    try:
+        t = THUMBS_DIR / (safe_name(aid) + ".jpg")
+        if t.is_file():
+            t.unlink()
+    except OSError:
+        pass
+    return {"ok": True, "deleted": aid}
 
 
 @app.get("/api/v1/projects", response_model=list[ProjectOut])

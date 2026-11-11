@@ -1,4 +1,4 @@
-# Hermes Studio — kit V1 funzionante (vertical slice)
+# Hermes Studio — V2 (vertical slice completa)
 
 App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per generare immagini con Qwen-Image 2.1 via ComfyUI sul server `hermes`. Video **disabilitato per license-gate MiniMax H3** (documentato, UI + API 409).
 
@@ -6,7 +6,12 @@ App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per g
 - `backend/` FastAPI `/api/v1/*` (jobs persistenti SQLite WAL, ComfyUIAdapter, coda seriale, SSE, assets+thumbs, progetti/preferiti).
 - `android/` app nativa: Home, Crea (immagine), Crea video (gate), Libreria, Impostazioni (pairing + **auto-update in-app**). Nessuna WebView.
 - `docs/DISCOVERY.md` ricognizione reale, `docs/API.md` contratto, `docs/PAIRING.md` pairing Tailscale, `docs/RUNBOOK.md` operativo, `docs/UPDATE.md` auto-update.
-- `tests/test_backend.py` 12 test verdi. `.env.example` per tutte le env.
+- `tests/test_backend.py` 14 test verdi. `.env.example` per tutte le env.
+
+## V2 (corrente)
+- Dettaglio job (tap in coda: stato/progresso reali, output, annulla, riusa) e dettaglio asset (scarica in galleria, condividi, preferito, assegna a progetto, riusa, elimina).
+- SSE live (`GET /events` + fallback poll 15s) invece di polling cieco; niente recompose a vuoto, request Coil stabili, ricerca Libreria client-side.
+- `DELETE /api/v1/assets/{id}` + `GET /api/v1/assets/{id}` con test.
 
 ## Prerequisiti
 - Server: Python 3.12, ComfyUI `:8188`, gpu-manager `:8643`, systemd.

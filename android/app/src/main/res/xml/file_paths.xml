@@ -3,4 +3,5 @@
     <external-files-path name="updates" path="updates/" />
     <external-files-path name="exports" path="exports/" />
     <cache-path name="cache_updates" path="updates/" />
+    <cache-path name="cache_share" path="hermes-share/" />
 </paths>

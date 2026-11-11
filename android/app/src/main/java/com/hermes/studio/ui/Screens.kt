@@ -184,21 +184,26 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
 
+    suspend fun refreshLight() {
+        // Poll leggero: assegna solo se cambiato, niente recompose a vuoto (perf).
+        try {
+            val api = repo.api()
+            val freshJobs = api.jobs(10)
+            if (freshJobs != jobs) jobs = freshJobs
+            val al = api.assets()
+            if (al != assets) {
+                assets = al
+                urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+            }
+        } catch (_: Exception) {}
+    }
     suspend fun refresh() {
         try {
             // Parallelo: 3 round-trip in uno solo (perf su tailnet).
             val api = repo.api()
             val capsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.capabilities() }
-            val jobsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.jobs(10) }
-            val assetsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.assets() }
             caps = capsD.await()
-            val freshJobs = jobsD.await()
-            if (freshJobs != jobs) jobs = freshJobs
-            val al = assetsD.await()
-            if (al != assets) {
-                assets = al
-                urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
-            }
+            refreshLight()
             loader = repo.imageLoader()
             err = null
         } catch (e: Exception) { err = e.message }
@@ -207,21 +212,35 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
         val p = try { a.job_id?.let { repo.api().job(it).prompt } } catch (_: Exception) { null }
         go(if (p.isNullOrBlank()) "create" else "create?prompt=" + Uri.encode(p))
     }
-    LaunchedEffect(Unit) {
-        refresh()
-        while (true) {
-            kotlinx.coroutines.delay(5000)
-            // Poll leggero: assegna solo se cambiato, niente recompose a vuoto (perf).
+    var live by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { refresh() }
+    // SSE live dal server: aggiornamento istantaneo senza polling (perf + batteria).
+    DisposableEffect(Unit) {
+        var es: okhttp3.sse.EventSource? = null
+        val task = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val api = repo.api()
-                val freshJobs = api.jobs(10)
-                if (freshJobs != jobs) jobs = freshJobs
-                val al = api.assets()
-                if (al != assets) {
-                    assets = al
-                    urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
-                }
-            } catch (_: Exception) {}
+                es = repo.watchEvents(object : okhttp3.sse.EventSourceListener() {
+                    override fun onOpen(e: okhttp3.sse.EventSource, response: okhttp3.Response) {
+                        scope.launch { live = true }
+                    }
+                    override fun onEvent(e: okhttp3.sse.EventSource, id: String?, type: String?, data: String) {
+                        scope.launch(kotlinx.coroutines.Dispatchers.IO) { refreshLight() }
+                    }
+                    override fun onFailure(e: okhttp3.sse.EventSource, t: Throwable?, r: okhttp3.Response?) {
+                        scope.launch { live = false }
+                    }
+                })
+            } catch (_: Exception) { scope.launch { live = false } }
+        }
+        onDispose { task.cancel(); try { es?.cancel() } catch (_: Exception) {} }
+    }
+    // Fallback se SSE non disponibile: poll leggero ogni 15s.
+    LaunchedEffect(live) {
+        if (!live) {
+            while (true) {
+                kotlinx.coroutines.delay(15000)
+                refreshLight()
+            }
         }
     }
     LazyColumn(
@@ -262,7 +281,10 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     items(assets.take(6), key = { it.id }) { a ->
                         val req = rememberImgReq(urls[a.id], loader)
-                        Box(Modifier.size(150.dp, 190.dp).clip(RoundedCornerShape(16.dp)).background(Card)) {
+                        Box(
+                            Modifier.size(150.dp, 190.dp).clip(RoundedCornerShape(16.dp)).background(Card)
+                                .clickable { onNav("asset/${a.id}") }
+                        ) {
                             if (req != null && loader != null) {
                                 AsyncImage(
                                     model = req, imageLoader = loader!!,
@@ -303,7 +325,12 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
         }
         item {
             val active = jobs.filter { it.status in listOf("queued", "preparing", "running", "cancelling") }
-            SectionHeader(Icons.Filled.Layers, "Coda di rendering (Server)")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Layers, null, tint = AccentV, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Coda di rendering (Server)", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (live) Text("· Live", color = Good, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
             Spacer(Modifier.height(4.dp))
             Text(
                 if (active.isEmpty()) "Nessuna attività in corso" else "${active.size} attività in corso",
@@ -316,7 +343,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
                         Text("La coda è vuota. I nuovi job appariranno qui in tempo reale.", color = Muted, fontSize = 13.sp)
                     }
                     active.take(4).forEach { j ->
-                        Surface(shape = RoundedCornerShape(14.dp), color = Bg, border = BorderStroke(1.dp, CardBorder)) {
+                        Surface(shape = RoundedCornerShape(14.dp), color = Bg, border = BorderStroke(1.dp, CardBorder), onClick = { onNav("job/${j.id}") }) {
                             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(j.prompt.take(48), fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -690,7 +717,7 @@ fun CreateVideoScreen() {
 // ---------- Libreria (mockup 04) ----------
 
 @Composable
-fun LibraryScreen(repo: StudioRepo, onReuse: (String) -> Unit) {
+fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     var q by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf("Tutto") }
@@ -863,7 +890,10 @@ fun LibraryScreen(repo: StudioRepo, onReuse: (String) -> Unit) {
             items(visible, key = { it.id }) { a ->
                 val req = rememberImgReq(urls[a.id], loader)
                 val isFav = favIds.contains(a.id)
-                Box(Modifier.aspectRatio(0.72f).clip(RoundedCornerShape(14.dp)).background(Card)) {
+                Box(
+                    Modifier.aspectRatio(0.72f).clip(RoundedCornerShape(14.dp)).background(Card)
+                        .clickable { onAsset("asset/${a.id}") }
+                ) {
                     if (req != null && loader != null) {
                         AsyncImage(
                             model = req, imageLoader = loader!!, contentDescription = a.id,
@@ -1061,6 +1091,271 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
                     }
                 }
             }
+        }
+    }
+}
+
+// ---------- Dettaglio asset (V2) ----------
+
+@Composable
+fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String) -> Unit, onDeleted: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
+    var asset by remember { mutableStateOf<Asset?>(null) }
+    var jobPrompt by remember { mutableStateOf<String?>(null) }
+    var isFav by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf("") }
+    var showDelete by remember { mutableStateOf(false) }
+    var showProjects by remember { mutableStateOf(false) }
+    var projects by remember { mutableStateOf<List<Project>>(emptyList()) }
+    var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
+    var imgUrl by remember { mutableStateOf<String?>(null) }
+    val req = rememberImgReq(imgUrl, loader)
+
+    suspend fun load() {
+        try {
+            val a = repo.api().asset(assetId)
+            asset = a
+            loader = repo.imageLoader()
+            imgUrl = repo.assetUrl(a, true) ?: repo.assetUrl(a, false)
+            isFav = try { repo.api().assets(favorite = true).any { it.id == assetId } } catch (_: Exception) { isFav }
+            jobPrompt = try { a.job_id?.let { repo.api().job(it).prompt } } catch (_: Exception) { null }
+            projects = try { repo.api().projects() } catch (_: Exception) { emptyList() }
+        } catch (e: Exception) { msg = "Errore: ${e.message}" }
+    }
+    LaunchedEffect(assetId) { scope.launch(kotlinx.coroutines.Dispatchers.IO) { load() } }
+
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = 16.dp).imePadding(),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)
+    ) {
+        item { Text("Dettaglio", fontWeight = FontWeight.Bold, fontSize = 28.sp) }
+        item {
+            Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, CardBorder)) {
+                Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(CardShape).background(Color(0xFF141428))) {
+                    if (req != null && loader != null && asset != null) {
+                        AsyncImage(
+                            model = req, imageLoader = loader!!, contentDescription = asset!!.id,
+                            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                        )
+                    }
+                }
+            }
+        }
+        asset?.let { a ->
+            item {
+                Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, CardBorder)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (a.kind == "video") "Video" else "Immagine", fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                            StatusPill(if (isFav) "Preferito" else a.kind, isFav)
+                        }
+                        if (a.width != null && a.height != null) Text("Risoluzione: ${a.width} × ${a.height}", color = Muted, fontSize = 14.sp)
+                        a.job_id?.let { Text("Job: $it", color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        jobPrompt?.let { Text(it, fontSize = 14.sp, maxLines = 4, overflow = TextOverflow.Ellipsis) }
+                        if (msg.isNotBlank()) Text(msg, color = Warn, fontSize = 13.sp)
+                    }
+                }
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Box(Modifier.weight(1f)) {
+                            GradientButton("Scarica", Icons.Filled.Download, onClick = {
+                                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                    try {
+                                        repo.saveToGallery(a)
+                                        msg = "Salvato in galleria."
+                                    } catch (e: Exception) { msg = "Download fallito: ${e.message}" }
+                                }
+                            })
+                        }
+                        Box(Modifier.weight(1f)) {
+                            GradientButton("Condividi", Icons.Filled.Share, blue = true, onClick = {
+                                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                    try {
+                                        val f = repo.downloadToCache(a)
+                                        ctx.startActivity(android.content.Intent.createChooser(repo.shareFile(f, a.kind), "Condividi"))
+                                    } catch (e: Exception) { msg = "Condivisione fallita: ${e.message}" }
+                                }
+                            })
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Box(Modifier.weight(1f)) {
+                            GradientButton(if (isFav) "Rimuovi preferito" else "Preferito", Icons.Filled.Favorite, onClick = {
+                                val to = !isFav
+                                isFav = to
+                                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                    try { repo.api().favorite(a.id, to) } catch (_: Exception) { isFav = !to }
+                                }
+                            })
+                        }
+                        Box(Modifier.weight(1f)) {
+                            GradientButton("Progetto", Icons.Filled.Folder, blue = true, onClick = { showProjects = true })
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (a.job_id != null) {
+                            Box(Modifier.weight(1f)) {
+                                GradientButton("Riusa prompt", Icons.Filled.ContentCopy, onClick = {
+                                    val p = jobPrompt
+                                    onReusePrompt(if (p.isNullOrBlank()) "create" else "create?prompt=" + Uri.encode(p))
+                                })
+                            }
+                        }
+                        Box(Modifier.weight(1f)) {
+                            GradientButton("Elimina", Icons.Filled.Delete, onClick = { showDelete = true })
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (showDelete) {
+        AlertDialog(
+            onDismissRequest = { showDelete = false },
+            title = { Text("Eliminare questo elemento?") },
+            text = { Text("File, miniatura e riferimenti verranno rimossi dal server. L'azione è definitiva.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        try { repo.deleteAsset(assetId); onDeleted() }
+                        catch (e: Exception) { msg = "Eliminazione fallita: ${e.message}" }
+                    }
+                    showDelete = false
+                }) { Text("Elimina", color = Warn) }
+            },
+            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Annulla", color = Muted) } }
+        )
+    }
+    if (showProjects && asset != null) {
+        val aid = asset!!.id
+        AlertDialog(
+            onDismissRequest = { showProjects = false },
+            title = { Text("Assegna a progetto") },
+            text = {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (projects.isEmpty()) {
+                        item { Text("Nessun progetto: crealo dalla Libreria.", color = Muted, fontSize = 14.sp) }
+                    }
+                    items(projects, key = { it.id }) { p ->
+                        TextButton(onClick = {
+                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                try {
+                                    repo.api().addToProject(p.id, aid)
+                                    msg = "Aggiunto a ${p.name}."
+                                } catch (e: Exception) { msg = "Errore: ${e.message}" }
+                            }
+                            showProjects = false
+                        }, modifier = Modifier.fillMaxWidth()) {
+                            Text("${p.name} (${p.asset_ids.size})", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {                         TextButton(onClick = { showProjects = false }) { Text("Chiudi", color = Muted) } }
+        )
+    }
+}
+
+// ---------- Dettaglio job (V2) ----------
+
+@Composable
+fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> Unit, onOpenAsset: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var job by remember { mutableStateOf<Job?>(null) }
+    var outAssets by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var outUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var msg by remember { mutableStateOf("") }
+    var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
+
+    suspend fun load() {
+        try {
+            val j = repo.api().job(jobId)
+            job = j
+            loader = repo.imageLoader()
+            val found = j.outputs.mapNotNull { aid ->
+                try { repo.api().asset(aid) } catch (_: Exception) { null }
+            }
+            outAssets = found
+            outUrls = found.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+        } catch (e: Exception) { msg = "Errore: ${e.message}" }
+    }
+    LaunchedEffect(jobId) { scope.launch(kotlinx.coroutines.Dispatchers.IO) { load() } }
+
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = 16.dp).imePadding(),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)
+    ) {
+        item { Text("Dettaglio job", fontWeight = FontWeight.Bold, fontSize = 28.sp) }
+        job?.let { j ->
+            item {
+                Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, CardBorder)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(jobLabel(j.status), fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                            StatusPill(jobLabel(j.status), jobGood(j.status))
+                        }
+                        Text(j.prompt, fontSize = 14.sp)
+                        Text(
+                            "${j.engine} · ${j.model}" +
+                                ((j.width != null && j.height != null) ? " · ${j.width}×${j.height}" : "") +
+                                (j.steps?.let { " · $it step" } ?: "") +
+                                (j.seed?.let { " · seed $it" } ?: ""),
+                            color = Muted, fontSize = 13.sp
+                        )
+                        LinearProgressIndicator(
+                            progress = { ((j.progress ?: 0.0).toFloat()).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                            color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
+                        )
+                        if (!j.error.isNullOrBlank()) Text(j.error!!.take(300), color = Warn, fontSize = 13.sp)
+                        if (msg.isNotBlank()) Text(msg, color = Warn, fontSize = 13.sp)
+                    }
+                }
+            }
+            if (j.status in listOf("queued", "running", "preparing")) {
+                item {
+                    GradientButton("Annulla job", Icons.Filled.Close, onClick = {
+                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            try { job = repo.api().cancel(j.id) } catch (e: Exception) { msg = "Errore: ${e.message}" }
+                        }
+                    })
+                }
+            }
+            if (outAssets.isNotEmpty()) {
+                item {
+                    SectionHeader(Icons.Filled.Image, "Risultati (${outAssets.size})")
+                    Spacer(Modifier.height(10.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(outAssets, key = { it.id }) { a ->
+                            val req = rememberImgReq(outUrls[a.id], loader)
+                            Surface(shape = RoundedCornerShape(14.dp), color = Card, border = BorderStroke(1.dp, CardBorder), onClick = { onOpenAsset("asset/${a.id}") }) {
+                                Box(Modifier.size(140.dp, 160.dp).clip(RoundedCornerShape(14.dp))) {
+                                    if (req != null && loader != null) {
+                                        AsyncImage(
+                                            model = req, imageLoader = loader!!, contentDescription = a.id,
+                                            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                GradientButton("Riusa prompt", Icons.Filled.ContentCopy, onClick = {
+                    onReusePrompt("create?prompt=" + Uri.encode(j.prompt))
+                })
+            }
+        } ?: item {
+            if (msg.isNotBlank()) Text(msg, color = Warn, fontSize = 13.sp)
+            else Text("Caricamento job…", color = Muted, fontSize = 14.sp)
         }
     }
 }

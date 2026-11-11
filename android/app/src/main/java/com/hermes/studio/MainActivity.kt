@@ -92,7 +92,29 @@ class MainActivity : ComponentActivity() {
                             CreateImageScreen(repo, initialPrompt = backStack.arguments?.getString("prompt"))
                         }
                         composable("video") { CreateVideoScreen() }
-                        composable("library") { LibraryScreen(repo) { nav.navigate(it) } }
+                        composable("library") {
+                            LibraryScreen(repo, onAsset = { nav.navigate(it) }, onReuse = { nav.navigate(it) })
+                        }
+                        composable(
+                            "asset/{id}",
+                            arguments = listOf(navArgument("id") { type = NavType.StringType })
+                        ) { backStack ->
+                            AssetDetailScreen(
+                                repo, backStack.arguments?.getString("id") ?: "",
+                                onReusePrompt = { nav.navigate(it) },
+                                onDeleted = { nav.popBackStack() }
+                            )
+                        }
+                        composable(
+                            "job/{id}",
+                            arguments = listOf(navArgument("id") { type = NavType.StringType })
+                        ) { backStack ->
+                            JobDetailScreen(
+                                repo, backStack.arguments?.getString("id") ?: "",
+                                onReusePrompt = { nav.navigate(it) },
+                                onOpenAsset = { nav.navigate(it) }
+                            )
+                        }
                         composable("settings") { SettingsScreen(repo, updater) }
                     }
                 }

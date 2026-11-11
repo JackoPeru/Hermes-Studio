@@ -38,6 +38,9 @@ jobs:
           if [ ! -f ./gradlew ]; then gradle wrapper --gradle-version 8.9; fi
           chmod +x ./gradlew
           ./gradlew assembleDebug --build-cache
+      - name: Unit tests (JVM, no device)
+        working-directory: android
+        run: ./gradlew testDebugUnitTest --build-cache
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
