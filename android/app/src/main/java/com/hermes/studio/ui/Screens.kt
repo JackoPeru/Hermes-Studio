@@ -55,6 +55,16 @@ val CtaGradient = Brush.horizontalGradient(listOf(AccentV, AccentB))
 val BlueGradient = Brush.horizontalGradient(listOf(Color(0xFF3B82F6), Color(0xFF1D4ED8)))
 val Scrim = Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.78f)))
 
+/** ImageRequest stabile fra recompose: evita reload/flicker di Coil (perf). */
+@Composable
+fun rememberImgReq(url: String?, loader: coil.ImageLoader?): coil.request.ImageRequest? {
+    val ctx = LocalContext.current
+    return remember(url, loader) {
+        if (url == null || loader == null) null
+        else coil.request.ImageRequest.Builder(ctx).data(url).crossfade(true).build()
+    }
+}
+
 @Composable
 fun HermesTheme(content: @Composable () -> Unit) {
     MaterialTheme(
@@ -171,18 +181,24 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
     var urls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var err by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    val ctx = LocalContext.current
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
 
     suspend fun refresh() {
         try {
+            // Parallelo: 3 round-trip in uno solo (perf su tailnet).
             val api = repo.api()
-            caps = api.capabilities()
-            jobs = api.jobs(10)
-            val al = api.assets()
-            assets = al
+            val capsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.capabilities() }
+            val jobsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.jobs(10) }
+            val assetsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.assets() }
+            caps = capsD.await()
+            val freshJobs = jobsD.await()
+            if (freshJobs != jobs) jobs = freshJobs
+            val al = assetsD.await()
+            if (al != assets) {
+                assets = al
+                urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+            }
             loader = repo.imageLoader()
-            urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
             err = null
         } catch (e: Exception) { err = e.message }
     }
@@ -194,7 +210,17 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
         refresh()
         while (true) {
             kotlinx.coroutines.delay(5000)
-            try { jobs = repo.api().jobs(10) } catch (_: Exception) {}
+            // Poll leggero: assegna solo se cambiato, niente recompose a vuoto (perf).
+            try {
+                val api = repo.api()
+                val freshJobs = api.jobs(10)
+                if (freshJobs != jobs) jobs = freshJobs
+                val al = api.assets()
+                if (al != assets) {
+                    assets = al
+                    urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+                }
+            } catch (_: Exception) {}
         }
     }
     LazyColumn(
@@ -234,12 +260,12 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
             } else {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     items(assets.take(6), key = { it.id }) { a ->
-                        val url = urls[a.id]
+                        val req = rememberImgReq(urls[a.id], loader)
                         Box(Modifier.size(150.dp, 190.dp).clip(RoundedCornerShape(16.dp)).background(Card)) {
-                            if (url != null && loader != null) {
+                            if (req != null && loader != null) {
                                 AsyncImage(
-                                    model = ImageRequest.Builder(ctx).data(url).crossfade(true).build(),
-                                    imageLoader = loader!!, contentDescription = a.id,
+                                    model = req, imageLoader = loader!!,
+                                    contentDescription = a.id,
                                     modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                                 )
                             }
@@ -369,7 +395,6 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
     var state by remember { mutableStateOf("Pronto") }
     var recent by remember { mutableStateOf<List<Asset>>(emptyList()) }
     var recentUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    val ctx = LocalContext.current
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
 
     val styles = listOf(
@@ -523,12 +548,11 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             Spacer(Modifier.height(10.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(recent, key = { it.id }) { a ->
-                    val url = recentUrls[a.id]
+                    val req = rememberImgReq(recentUrls[a.id], loader)
                     Box(Modifier.size(150.dp, 170.dp).clip(RoundedCornerShape(14.dp)).background(Card)) {
-                        if (url != null && loader != null) {
+                        if (req != null && loader != null) {
                             AsyncImage(
-                                model = ImageRequest.Builder(ctx).data(url).crossfade(true).build(),
-                                imageLoader = loader!!, contentDescription = a.id,
+                                model = req, imageLoader = loader!!, contentDescription = a.id,
                                 modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                             )
                         }
@@ -677,37 +701,53 @@ fun LibraryScreen(repo: StudioRepo, onReuse: (String) -> Unit) {
     var err by remember { mutableStateOf<String?>(null) }
     var showNewProject by remember { mutableStateOf(false) }
     var newProjectName by remember { mutableStateOf("") }
-    val ctx = LocalContext.current
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
 
     suspend fun reload() {
         try {
+            // Un solo giro di rete: lista intera + preferiti + progetti in parallelo.
             val api = repo.api()
-            val fav = filter == "Preferiti"
             val kind = when (filter) {
                 "Immagini" -> "image"
                 "Video" -> "video"
                 else -> null
             }
-            val favList = if (fav) api.assets(favorite = true) else emptyList()
-            favIds = api.assets(favorite = true).map { it.id }.toSet()
-            val all = if (fav) favList else api.assets(kind = kind)
-            projects = try { api.projects() } catch (_: Exception) { emptyList() }
-            loader = repo.imageLoader()
-            urls = all.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
-            val searched = all.filter { a ->
-                q.isBlank() || a.id.contains(q, true) || (a.job_id ?: "").contains(q, true)
+            val allD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.assets(kind = kind) }
+            val favD = scope.async(kotlinx.coroutines.Dispatchers.IO) {
+                try { api.assets(favorite = true).map { it.id }.toSet() } catch (_: Exception) { favIds }
             }
-            assets = if (sortNewest) searched.sortedByDescending { it.created_at } else searched.sortedBy { it.created_at }
+            val prjD = scope.async(kotlinx.coroutines.Dispatchers.IO) {
+                try { api.projects() } catch (_: Exception) { emptyList() }
+            }
+            val all = allD.await()
+            if (all != assets) {
+                assets = all
+                urls = all.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+            }
+            favIds = favD.await()
+            projects = prjD.await()
+            loader = repo.imageLoader()
             err = null
         } catch (e: Exception) { err = e.message }
     }
+    // Filtro/sort/ricerca TUTTI client-side: zero rete mentre digiti (perf).
+    val visible by remember(q, assets, filter, sortNewest, favIds) {
+        mutableStateOf(
+            assets.filter { a ->
+                (filter != "Preferiti" || favIds.contains(a.id)) &&
+                    (q.isBlank() || a.id.contains(q, true) || (a.job_id ?: "").contains(q, true))
+            }.let { if (sortNewest) it.sortedByDescending { a -> a.created_at } else it.sortedBy { a -> a.created_at } }
+        )
+    }
     fun toggleFav(a: Asset) {
+        val on = !favIds.contains(a.id)
+        favIds = if (on) favIds + a.id else favIds - a.id // ottimistico: UI immediata
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                repo.api().favorite(a.id, !favIds.contains(a.id))
-                reload()
-            } catch (_: Exception) {}
+                repo.api().favorite(a.id, on)
+            } catch (_: Exception) {
+                favIds = if (on) favIds - a.id else favIds + a.id // rollback
+            }
         }
     }
     fun reuse(a: Asset) {
@@ -716,7 +756,7 @@ fun LibraryScreen(repo: StudioRepo, onReuse: (String) -> Unit) {
             onReuse(if (p.isNullOrBlank()) "create" else "create?prompt=" + Uri.encode(p))
         }
     }
-    LaunchedEffect(filter, sortNewest) {
+    LaunchedEffect(filter) {
         scope.launch(kotlinx.coroutines.Dispatchers.IO) { reload() }
     }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp).imePadding()) {
@@ -737,7 +777,7 @@ fun LibraryScreen(repo: StudioRepo, onReuse: (String) -> Unit) {
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedTextField(
-                value = q, onValueChange = { q = it; scope.launch(kotlinx.coroutines.Dispatchers.IO) { reload() } },
+                value = q, onValueChange = { q = it },
                 modifier = Modifier.weight(1f), placeholder = { Text("Cerca nelle tue generazioni…") },
                 leadingIcon = { Icon(Icons.Filled.Search, null, tint = Muted) },
                 shape = RoundedCornerShape(24.dp), singleLine = true
@@ -774,12 +814,12 @@ fun LibraryScreen(repo: StudioRepo, onReuse: (String) -> Unit) {
         Spacer(Modifier.height(10.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             items(projects, key = { it.id }) { p ->
-                val thumb = urls[p.asset_ids.firstOrNull()]
+                val req = rememberImgReq(urls[p.asset_ids.firstOrNull()], loader)
                 Surface(shape = RoundedCornerShape(16.dp), color = Card, border = BorderStroke(1.dp, CardBorder)) {
                     Box(Modifier.size(150.dp, 130.dp)) {
-                        if (thumb != null && loader != null) {
+                        if (req != null && loader != null) {
                             AsyncImage(
-                                model = ImageRequest.Builder(ctx).data(thumb).crossfade(true).build(),
+                                model = req, imageLoader = loader!!,
                                 imageLoader = loader!!, contentDescription = p.name,
                                 modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                             )
@@ -820,14 +860,13 @@ fun LibraryScreen(repo: StudioRepo, onReuse: (String) -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.weight(1f)
         ) {
-            items(assets, key = { it.id }) { a ->
-                val url = urls[a.id]
+            items(visible, key = { it.id }) { a ->
+                val req = rememberImgReq(urls[a.id], loader)
                 val isFav = favIds.contains(a.id)
                 Box(Modifier.aspectRatio(0.72f).clip(RoundedCornerShape(14.dp)).background(Card)) {
-                    if (url != null && loader != null) {
+                    if (req != null && loader != null) {
                         AsyncImage(
-                            model = ImageRequest.Builder(ctx).data(url).crossfade(true).build(),
-                            imageLoader = loader!!, contentDescription = a.id,
+                            model = req, imageLoader = loader!!, contentDescription = a.id,
                             modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                         )
                     }
