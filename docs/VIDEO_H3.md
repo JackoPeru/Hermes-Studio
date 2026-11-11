@@ -21,6 +21,8 @@ Tutto sotto è rilevato via SSH read-only su `hermes`, non ipotizzato.
    `ffprobe` per durata/risoluzione, thumbnail a 0.5s, asset `kind=video` + `duration`.
 
 ## Note operative
+- Auth verso il manager con ruolo app (`app.key`, mai full-control): submit verificato
+  in 3ms su preset inesistente (400 atteso, nessun job creato), `/status` studio in 0.78s.
 - Durata fissa ~5s (default `length` 124 @24fps del preset turbo): nessuna opzione
   durata finché combinazioni diverse non saranno validate con render reali.
 - Camera motion (Dolly/Pan/Loop): solo suggerimenti testuali appesi al prompt —
