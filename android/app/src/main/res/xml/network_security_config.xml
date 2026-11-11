@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- V1: backend privato su tailnet HTTP (Tailscale Serve davanti per HTTPS pubblico).
-         Cleartext consentito solo in privato: 10/8, 172.16/12, 192.168/16, 100.64/10 (tailnet), localhost. -->
+    <!-- V1: backend privato su tailnet HTTP (tailscale serve --http=8650).
+         tailscale serve risponde solo al nome MagicDNS, non all'IP letterale:
+         serve http://hermes.tail85940c.ts.net:8650 (non http://100.94.223.14:8650). -->
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">100.94.223.14</domain>
+        <domain includeSubdomains="true">tail85940c.ts.net</domain>
         <domain includeSubdomains="false">localhost</domain>
         <domain includeSubdomains="false">127.0.0.1</domain>
     </domain-config>

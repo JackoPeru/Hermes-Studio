@@ -56,7 +56,7 @@ class StudioRepo(private val ctx: Context) {
     private var loaderToken = "__unset__"
 
     suspend fun baseUrl(): String =
-        ctx.store.data.map { it[KEY_BASE] ?: "http://100.94.223.14:8650/" }.first().let {
+        ctx.store.data.map { it[KEY_BASE] ?: "http://hermes.tail85940c.ts.net:8650/" }.first().let {
             if (it.endsWith("/")) it else "$it/"
         }
 

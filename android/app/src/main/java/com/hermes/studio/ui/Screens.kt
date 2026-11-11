@@ -385,7 +385,7 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("Impostazioni", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
         item {
-            OutlinedTextField(base, { base = it }, label = { Text("Indirizzo backend (privato, es. http://100.94.223.14:8650/)") },
+            OutlinedTextField(base, { base = it }, label = { Text("Indirizzo backend (privato, es. http://hermes.tail85940c.ts.net:8650/)") },
                 modifier = Modifier.fillMaxWidth())
             OutlinedTextField(tok, { tok = it }, label = { Text("Token di pairing (mai hardcoded)") },
                 modifier = Modifier.fillMaxWidth())
