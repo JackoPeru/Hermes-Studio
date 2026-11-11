@@ -5,7 +5,7 @@
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-21/HermesStudio-21.apk",
   "assetSize": 19011117,
   "sha256": "466df1430f7aaa01fa379c36a68c534dea378f429c166b82fc4d8bbe2475996b",
-  "signature": "",
+  "signature": "MEUCIQD8amiBq+xD3nv2Ilgw46E4PDJcw2IaULELWE8Pm8vzwwIgeRaFlDTCEDVtK6lJsvLAfZvLhLFNmRgdVs8skDaqs6Y=",
   "publishedAt": "2026-11-11T22:50:43Z",
   "notes": ["V1 + auto-update in-app"]
 }
