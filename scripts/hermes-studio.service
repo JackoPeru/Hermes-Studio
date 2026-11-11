@@ -1,0 +1,20 @@
+[Unit]
+Description=Hermes Studio backend (private, loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=matteo
+Group=matteo
+WorkingDirectory=/opt/hermes/hermes-studio/backend
+Environment=HERMES_STUDIO_DATA=/var/lib/hermes-studio
+Environment=HERMES_STUDIO_HOST=127.0.0.1
+Environment=HERMES_STUDIO_PORT=8650
+ExecStart=/opt/hermes/hermes-studio/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8650
+Restart=on-failure
+RestartSec=5
+# NON abilitare/avviare senza OK esplicito dell'utente.
+
+[Install]
+WantedBy=multi-user.target

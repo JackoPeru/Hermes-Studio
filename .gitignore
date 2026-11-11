@@ -1,0 +1,27 @@
+# Python / backend
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+data/
+*.db
+bearer.token
+# Android
+.gradle/
+.kotlin/
+local.properties
+*.iml
+.idea/
+android/app/build/
+android/build/
+android/.gradle/
+*.apk
+*.aab
+# OS
+.DS_Store
+Thumbs.db
+# Secrets / env
+.env
+*.key
+*.token
