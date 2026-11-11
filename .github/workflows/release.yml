@@ -39,7 +39,8 @@ jobs:
         run: cp android/app/build/outputs/apk/release/app-release.apk HermesStudio-release.apk
       - name: Publish GitHub release
         shell: bash
-        env: { GH_TOKEN: ${{ github.token }} }
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "studio-${HERMES_VERSION_CODE}" "HermesStudio-release.apk" \
             --repo "${GITHUB_REPOSITORY}" \
