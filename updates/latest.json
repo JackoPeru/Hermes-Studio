@@ -5,7 +5,7 @@
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-18/HermesStudio-18.apk",
   "assetSize": 18978349,
   "sha256": "97f8658b4c77b8f31ed01f9a6c81de51eb955af2ba25bdc1a14c38875bcf134c",
-  "signature": "",
+  "signature": "MEYCIQDXuokZZLzvyXyEOaQYolyGAVbm7y98z6UFicLQFIxcbQIhAL9toAyUzp37f9m9OlxrCKFY9jV/eki8V8d44ptP/uLv",
   "publishedAt": "2026-11-11T19:48:25Z",
   "notes": ["V1 + auto-update in-app"]
 }
