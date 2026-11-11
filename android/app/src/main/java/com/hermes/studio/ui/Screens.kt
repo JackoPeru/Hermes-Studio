@@ -187,6 +187,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
     var assets by remember { mutableStateOf<List<Asset>>(emptyList()) }
     var urls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var err by remember { mutableStateOf<String?>(null) }
+    var managerState by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
 
@@ -209,6 +210,13 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
             val api = repo.api()
             val capsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.capabilities() }
             caps = capsD.await()
+            try {
+                val st = api.status()
+                val ms = st.manager_state.orEmpty()
+                managerState = if (ms.isNotBlank()) {
+                    "Manager ${st.manager_desired.orEmpty()} · $ms"
+                } else ""
+            } catch (_: Exception) {}
             refreshLight()
             loader = repo.imageLoader()
             err = null
@@ -339,7 +347,8 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                if (active.isEmpty()) "Nessuna attività in corso" else "${active.size} attività in corso",
+                if (active.isEmpty()) "Nessuna attività in corso" else "${active.size} attività in corso" +
+                    (if (managerState.isNotBlank()) " · $managerState" else ""),
                 color = Muted, fontSize = 13.sp
             )
             Spacer(Modifier.height(10.dp))
@@ -1109,15 +1118,22 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
     var msg by remember { mutableStateOf("") }
     var storage by remember { mutableStateOf<StorageOut?>(null) }
     var queueLen by remember { mutableStateOf<Int?>(null) }
+    var gpus by remember { mutableStateOf<List<GpuInfo>>(emptyList()) }
+    var gpuErr by remember { mutableStateOf<String?>(null) }
     val updateState by updater.state.collectAsState()
+    suspend fun refreshSystem() {
+        try {
+            val s = repo.api().status()
+            storage = s.storage; queueLen = s.queue_length
+        } catch (_: Exception) {}
+        try {
+            gpus = repo.api().gpu()
+            gpuErr = null
+        } catch (e: Exception) { gpuErr = e.message }
+    }
     LaunchedEffect(Unit) {
         base = repo.baseUrl(); tok = repo.token()
-        scope.launch {
-            try {
-                val s = repo.api().status()
-                storage = s.storage; queueLen = s.queue_length
-            } catch (_: Exception) {}
-        }
+        scope.launch { refreshSystem() }
         scope.launch { updater.checkForUpdates() }
     }
     LazyColumn(
@@ -1144,8 +1160,7 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
                             try {
                                 repo.save(base, tok)
                                 repo.testConnection()
-                                val s = repo.api().status()
-                                storage = s.storage; queueLen = s.queue_length
+                                refreshSystem()
                                 msg = "Connessione OK (capabilities autenticate)."
                             } catch (e: Exception) { msg = "Errore: ${e.message}" }
                         }
@@ -1162,6 +1177,55 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
                         "Nessuna porta pubblica, nessuna telemetria esterna, nessun cloud. Solo tailnet privata + bearer.",
                         color = Muted, fontSize = 12.sp
                     )
+                }
+            }
+        }
+        item {
+            Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, CardBorder)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionHeader(Icons.Filled.Memory, "GPU server")
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { scope.launch(kotlinx.coroutines.Dispatchers.IO) { refreshSystem() } }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                            Icon(Icons.Filled.Refresh, null, tint = AccentV, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                    if (gpuErr != null) {
+                        Text("GPU non leggibili: $gpuErr", color = Warn, fontSize = 13.sp)
+                    } else if (gpus.isEmpty()) {
+                        Text("Lettura GPU in corso…", color = Muted, fontSize = 13.sp)
+                    }
+                    gpus.forEach { g ->
+                        Surface(shape = RoundedCornerShape(14.dp), color = Bg, border = BorderStroke(1.dp, CardBorder)) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("GPU ${g.index}", fontWeight = FontWeight.Bold, fontSize = 15.sp, modifier = Modifier.weight(1f), maxLines = 1)
+                                    if (g.temp_c != null) Text("${g.temp_c.toInt()}°C", color = if (g.temp_c >= 80) Warn else Good, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Text(g.name.ifBlank { "—" }, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                val used = g.mem_used_mb ?: 0.0
+                                val total = g.mem_total_mb ?: 0.0
+                                val frac = if (total > 0) (used / total).toFloat().coerceIn(0f, 1f) else 0f
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    LinearProgressIndicator(
+                                        progress = { frac },
+                                        modifier = Modifier.weight(1f).height(6.dp).clip(CircleShape),
+                                        color = AccentB, trackColor = Color.White.copy(alpha = 0.12f)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        if (total > 0) "${"%.1f".format(used / 1024)} / ${"%.0f".format(total / 1024)} GB" else "—",
+                                        color = Muted, fontSize = 12.sp, maxLines = 1
+                                    )
+                                }
+                                val u = g.util_pct
+                                Text(
+                                    if (u != null) "Computazione: ${u.toInt()}%" else "Computazione: —",
+                                    color = Muted, fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

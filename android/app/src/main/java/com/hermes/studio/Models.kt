@@ -31,6 +31,16 @@ data class Project(
 data class ProjectCreate(val name: String)
 
 @JsonClass(generateAdapter = true)
+data class GpuInfo(
+    val index: Int = 0,
+    val name: String = "",
+    val temp_c: Double? = null,
+    val util_pct: Double? = null,
+    val mem_used_mb: Double? = null,
+    val mem_total_mb: Double? = null
+)
+
+@JsonClass(generateAdapter = true)
 data class JobCreate(
     val taskType: String,
     val prompt: String,

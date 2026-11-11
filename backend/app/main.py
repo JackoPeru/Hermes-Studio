@@ -19,11 +19,11 @@ from .config import (
 )
 from .manager import ManagerClient
 from .models import (
-    AssetOut, CapabilitiesOut, CapabilityTask, HealthOut, JobCreate, JobOut,
+    AssetOut, CapabilitiesOut, CapabilityTask, GpuOut, HealthOut, JobCreate, JobOut,
     ProjectIn, ProjectOut,
 )
-from .storage import make_thumb, probe_video, safe_name, save_bytes, video_thumb
-from .workflows import DEFAULT_NEGATIVE, apply_style, build_qwen_t2i
+from .storage import make_thumb, probe_video, safe_name, video_thumb
+from .workflows import DEFAULT_NEGATIVE, apply_style
 
 # Single worker: serialized dispatch matches VRAM reality (never assume 2 heavy models resident).
 _worker_task: asyncio.Task | None = None
@@ -109,15 +109,17 @@ async def _run_one(job_id: str) -> None:
 
 
 async def _run_one_image(job_id: str) -> None:
-    import httpx as _httpx
-
+    """Text-to-image via GPU-manager (preset create_image, Qwen 2.1).
+    Niente Comfy diretto: in AUTO il manager fa unload LLM -> avvio Comfy ->
+    run -> restore LLM. Il submit accoda, il resto lo orchestra lui."""
     cx = db.connect()
     try:
         row = cx.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if row is None or row["status"] not in ("queued", "running"):
             return
-        # Reconcile: se ha già un prompt_id (restart), non risottomettere.
-        existing_prompt_id = row["comfy_prompt_id"]
+        # Reconcile: se ha già un manager id (restart), non risottomettere.
+        existing_mid = row["comfy_prompt_id"]
+        prompt_text = row["prompt"]
         params = json.loads(row["params"] or "{}")
         if row["status"] == "queued":
             cx.execute(
@@ -130,123 +132,144 @@ async def _run_one_image(job_id: str) -> None:
 
     cx = db.connect()
     try:
-        # Un solo client HTTP per tutto il job: niente socket churn nel poll.
-        async with _httpx.AsyncClient(timeout=30) as http:
-            from .comfy import ComfyUIAdapter as _A
-            adapter = _A(COMFY_URL, http)
-            prompt_id = existing_prompt_id
-            if not prompt_id:
-                row2 = cx.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-                if row2 is None:
-                    return
-                params = json.loads(row2["params"] or "{}")
-                # Build versioned workflow (image only in V1; video gated at submit).
-                prompt = build_qwen_t2i(
-                    prompt=row2["prompt"],
-                    negative=params.get("negative_prompt") or DEFAULT_NEGATIVE,
-                    width=int(params.get("width") or 1024),
-                    height=int(params.get("height") or 1024),
-                    seed=int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
-                    steps=int(params.get("steps") or 20),
-                    job_id=job_id,
-                )
-                try:
-                    prompt_id = await adapter.submit(prompt)
-                except Exception as e:  # Comfy offline (e.g. LLM resident)
-                    cx.execute(
-                        "UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
-                        (f"comfy submit failed: {e}", db.now(), job_id),
-                    )
-                    cx.commit()
-                    return
+        mgr = _manager()
+        mid = existing_mid
+        if not mid:
+            try:
+                res = await mgr.submit_image("create_image", {
+                    "prompt": prompt_text,
+                    "negative_prompt": params.get("negative_prompt") or DEFAULT_NEGATIVE,
+                    "width": int(params.get("width") or 1024),
+                    "height": int(params.get("height") or 1024),
+                    "seed": int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
+                    "steps": int(params.get("steps") or 20),
+                })
+                mid = str(res.get("job_id") or res.get("id") or "")
+                if not mid:
+                    raise ValueError(f"manager senza job_id: {res}")
+            except Exception as e:  # Manager giù o coda piena -> failed onesto
                 cx.execute(
-                    "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
-                    (prompt_id, db.now(), job_id),
+                    "UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                    (f"manager submit failed: {e}", db.now(), job_id),
                 )
                 cx.commit()
-            # Poll history (image default 20 min = 600 x 2s).
-            for _ in range(600):
-                await asyncio.sleep(2.0)
-                # cancel check (connessione breve, sempre chiusa)
-                cc = db.connect()
-                try:
-                    cur = cc.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
-                    cur_status = cur["status"] if cur else None
-                finally:
-                    cc.close()
-                if cur_status in ("cancelling", "cancelled"):
-                    try:
-                        await adapter.interrupt()
-                    except Exception:
-                        pass
-                    cc2 = db.connect()
-                    try:
-                        cc2.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?", (db.now(), job_id))
-                        cc2.commit()
-                    finally:
-                        cc2.close()
-                    return
-                if cur_status not in ("running", "preparing"):
-                    return
-                try:
-                    hist = await adapter.history(prompt_id)
-                except Exception:
-                    continue
-                node = (hist.get(prompt_id) or {})
-                outs = node.get("outputs") or {}
-                found: list[str] = []
-                for _nid, o in outs.items():
-                    for img in o.get("images", []) if isinstance(o, dict) else []:
-                        try:
-                            data = await adapter.fetch_view(
-                                img["filename"], img.get("subfolder", ""), "output")
-                        except Exception:
-                            continue
-                        rel = f"{job_id}_{safe_name(img['filename'])}"
-                        p = save_bytes(rel, data)
-                        # index asset
-                        c2 = db.connect()
-                        try:
-                            aid = db.new_id("ast")
-                            c2.execute(
-                                "INSERT INTO assets(id,kind,rel_path,job_id,created_at) VALUES(?,?,?,?,?)",
-                                (aid, "image", rel, job_id, db.now()),
-                            )
-                            c2.commit()
-                        finally:
-                            c2.close()
-                        try:
-                            from PIL import Image as _I
-                            with _I.open(p) as _im:
-                                w, h = _im.size
-                            c3 = db.connect()
-                            try:
-                                c3.execute("UPDATE assets SET width=?, height=? WHERE id=?", (w, h, aid))
-                                c3.commit()
-                            finally:
-                                c3.close()
-                        except Exception:
-                            pass
-                        make_thumb(p, aid)
-                        found.append(aid)
-                if found:
-                    cx.execute(
-                        "UPDATE jobs SET status='completed', progress=1.0, outputs=?, updated_at=? WHERE id=?",
-                        (json.dumps(found), db.now(), job_id),
-                    )
-                    cx.commit()
-                    return
-                cx.execute("UPDATE jobs SET progress=MAX(COALESCE(progress,0),0.2), updated_at=? WHERE id=?",
-                           (db.now(), job_id))
-                cx.commit()
-            cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
-                       ("timeout waiting for ComfyUI output", db.now(), job_id))
+                return
+            cx.execute(
+                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
+                (mid, db.now(), job_id),
+            )
             cx.commit()
+        # Poll manager (primo run include unload LLM + boot Comfy: 5s x 360 = 30min max).
+        for _ in range(360):
+            await asyncio.sleep(5.0)
+            # cancel check (connessione breve, sempre chiusa)
+            cc = db.connect()
+            try:
+                cur = cc.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+                cur_status = cur["status"] if cur else None
+            finally:
+                cc.close()
+            if cur_status in ("cancelling", "cancelled"):
+                try:
+                    await mgr.cancel_job(mid)
+                except Exception:
+                    pass
+                cc2 = db.connect()
+                try:
+                    cc2.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?", (db.now(), job_id))
+                    cc2.commit()
+                finally:
+                    cc2.close()
+                return
+            if cur_status not in ("running", "preparing"):
+                return
+            try:
+                st = await mgr.get_job(mid)
+            except Exception:
+                continue
+            mstatus = str(st.get("status") or "")
+            try:
+                prog = float(st.get("progress") or 0)
+            except (TypeError, ValueError):
+                prog = 0.0
+            if prog > 0:
+                cx.execute("UPDATE jobs SET progress=?, updated_at=? WHERE id=?",
+                           (max(0.05, min(0.99, prog)), db.now(), job_id))
+                cx.commit()
+            if mstatus == "done":
+                await _finish_image_job(cx, job_id, st)
+                return
+            if mstatus in ("failed", "cancelled"):
+                cx.execute("UPDATE jobs SET status=?, error=?, updated_at=? WHERE id=?",
+                           ("cancelled" if mstatus == "cancelled" else "failed",
+                            str(st.get("error") or "")[:500], db.now(), job_id))
+                cx.commit()
+                return
+            cx.execute("UPDATE jobs SET progress=MAX(COALESCE(progress,0),0.1), updated_at=? WHERE id=?",
+                       (db.now(), job_id))
+            cx.commit()
+        cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                   ("timeout attesa manager image", db.now(), job_id))
+        cx.commit()
     finally:
         try:
             cx.close()
         except Exception:
             pass
+
+
+async def _finish_image_job(cx, job_id: str, st: dict) -> None:
+    from pathlib import Path as _P
+    paths = st.get("result_paths") or []
+    if isinstance(paths, str):
+        paths = [paths]
+
+    def rank(p: str) -> int:
+        n = p.lower()
+        if n.endswith((".png", ".jpg", ".jpeg", ".webp")):
+            return 0
+        return 1
+
+    src = None
+    for p in sorted([x for x in paths if isinstance(x, str)], key=rank):
+        pp = _P(p)
+        try:
+            if pp.is_file() and not pp.is_symlink():
+                src = pp
+                break
+        except OSError:
+            continue
+    if src is None:
+        cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                   ("manager done ma nessun file immagine", db.now(), job_id))
+        cx.commit()
+        return
+    import shutil as _sh
+    rel = f"{job_id}_{safe_name(src.name)}"
+    dest = (ASSETS_DIR / safe_name(rel)).resolve()
+    assert str(dest).startswith(str(ASSETS_DIR.resolve())), "path traversal blocked"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(_sh.copy2, src, dest)
+    aid = db.new_id("ast")
+    cx.execute(
+        "INSERT INTO assets(id,kind,rel_path,job_id,created_at) VALUES(?,?,?,?,?)",
+        (aid, "image", rel, job_id, db.now()),
+    )
+    cx.commit()
+    try:
+        from PIL import Image as _I
+        with _I.open(dest) as _im:
+            w, h = _im.size
+        cx.execute("UPDATE assets SET width=?, height=? WHERE id=?", (w, h, aid))
+        cx.commit()
+    except Exception:
+        pass
+    await asyncio.to_thread(make_thumb, dest, aid)
+    cx.execute(
+        "UPDATE jobs SET status='completed', progress=1.0, outputs=?, updated_at=? WHERE id=?",
+        (json.dumps([aid]), db.now(), job_id),
+    )
+    cx.commit()
 
 
 async def _run_one_video(job_id: str) -> None:
@@ -504,6 +527,13 @@ async def status(_: None = Depends(require_auth)):
         out["manager"] = await _manager().status()
     except Exception as e:
         out["manager"] = {"error": str(e)[:300]}
+    # Campi piatti per client tipizzati (Moshi): stato orchestrazione GPU.
+    try:
+        out["manager_state"] = str(out["manager"].get("current_state") or "")
+        out["manager_desired"] = str(out["manager"].get("desired_mode") or "")
+    except Exception:
+        out["manager_state"] = ""
+        out["manager_desired"] = ""
     cx = db.connect()
     try:
         q = cx.execute("SELECT COUNT(*) c FROM jobs WHERE status IN ('queued','preparing','running')").fetchone()
@@ -513,6 +543,45 @@ async def status(_: None = Depends(require_auth)):
         out["storage"] = {"free_gb": round(du.free / 1e9, 1), "total_gb": round(du.total / 1e9, 1)}
     finally:
         cx.close()
+    return out
+
+
+@app.get("/api/v1/gpu", response_model=list[GpuOut])
+async def gpu(_: None = Depends(require_auth)):
+    """Telemetria GPU live via nvidia-smi (server hermes). 503 se assente."""
+    import shutil as _sh
+    import subprocess as _sp
+    if not _sh.which("nvidia-smi"):
+        raise HTTPException(503, "nvidia-smi non disponibile")
+    try:
+        r = await asyncio.to_thread(
+            _sp.run,
+            ["nvidia-smi", "--query-gpu=index,name,temperature.gpu,utilization.gpu,memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        raise HTTPException(503, f"nvidia-smi fallito: {e}")
+    if r.returncode != 0:
+        raise HTTPException(503, f"nvidia-smi errore: {(r.stderr or '')[:200]}")
+    out: list[GpuOut] = []
+    for line in (r.stdout or "").splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 5:
+            continue
+        try:
+            idx = int(float(parts[0]))
+        except (TypeError, ValueError):
+            continue
+
+        def num(x: str) -> float | None:
+            try:
+                return float(x.split()[0].replace("%", ""))
+            except (TypeError, ValueError, IndexError):
+                return None
+
+        out.append(GpuOut(index=idx, name=parts[1], temp_c=num(parts[2]),
+                          util_pct=num(parts[3]), mem_used_mb=num(parts[4]),
+                          mem_total_mb=num(parts[5]) if len(parts) > 5 else None))
     return out
 
 
@@ -563,7 +632,7 @@ async def create_job(body: JobCreate, _: None = Depends(require_auth)):
         seed = body.seed if body.seed is not None else random.randint(0, 2**31 - 1)
         params = {"width": w, "height": h, "steps": steps, "seed": seed,
                   "negative_prompt": body.negative_prompt, "style_preset": body.style_preset,
-                  "asset_ids": body.asset_ids}
+                  "asset_ids": body.asset_ids, "image_preset": "create_image"}
         task_type = "image"
     cx = db.connect()
     try:

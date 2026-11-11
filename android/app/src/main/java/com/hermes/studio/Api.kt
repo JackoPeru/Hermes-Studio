@@ -45,13 +45,16 @@ data class StorageOut(val free_gb: Double = 0.0, val total_gb: Double = 0.0)
 data class StatusOut(
     val backend: String = "",
     val queue_length: Int = 0,
-    val storage: StorageOut? = null
+    val storage: StorageOut? = null,
+    val manager_state: String? = null,
+    val manager_desired: String? = null
 )
 
 interface StudioApi {
     @GET("api/v1/health") suspend fun health(): Health
     @GET("api/v1/capabilities") suspend fun capabilities(): Capabilities
     @GET("api/v1/status") suspend fun status(): StatusOut
+    @GET("api/v1/gpu") suspend fun gpu(): List<GpuInfo>
     @GET("api/v1/jobs") suspend fun jobs(@Query("limit") limit: Int = 50): List<Job>
     @GET("api/v1/jobs/{id}") suspend fun job(@Path("id") id: String): Job
     @POST("api/v1/jobs") suspend fun createJob(@Body b: JobCreate): Job

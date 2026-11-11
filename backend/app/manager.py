@@ -21,20 +21,29 @@ class ManagerClient:
             r.raise_for_status()
             return r.json()
 
-    async def submit_video(self, preset: str, params: dict) -> dict:
-        """Accoda un job video (image-to-video turbo). 202 -> {job_id,...}."""
+    async def _submit(self, kind: str, preset: str, params: dict) -> dict:
+        """Accoda un job media (image|video). 202 -> {job_id,...}."""
+        route = "/jobs/video" if kind == "video" else "/jobs/image"
         if self._client is not None:
             r = await self._client.post(
-                f"{self.base_url}/jobs/video",
+                f"{self.base_url}{route}",
                 json={"preset": preset, "parameters": params}, headers=self._headers())
             r.raise_for_status()
             return r.json()
         async with httpx.AsyncClient(timeout=30) as cx:
             r = await cx.post(
-                f"{self.base_url}/jobs/video",
+                f"{self.base_url}{route}",
                 json={"preset": preset, "parameters": params}, headers=self._headers())
             r.raise_for_status()
             return r.json()
+
+    async def submit_video(self, preset: str, params: dict) -> dict:
+        """Accoda un job image-to-video H3 turbo. 202 -> {job_id,...}."""
+        return await self._submit("video", preset, params)
+
+    async def submit_image(self, preset: str, params: dict) -> dict:
+        """Accoda un job text-to-image Qwen. 202 -> {job_id,...}."""
+        return await self._submit("image", preset, params)
 
     async def get_job(self, manager_id: str) -> dict:
         if self._client is not None:

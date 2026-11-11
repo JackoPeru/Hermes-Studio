@@ -64,6 +64,14 @@ def test_enqueue_image_and_idempotency(client):
     assert r1.status_code == 201, r1.text
     r2 = client.post("/api/v1/jobs", json=body)
     assert r2.json()["id"] == r1.json()["id"]
+    import app.db as dbmod
+    import json as _json
+    cx = dbmod.connect()
+    try:
+        row = cx.execute("SELECT params FROM jobs WHERE id=?", (r1.json()["id"],)).fetchone()
+    finally:
+        cx.close()
+    assert _json.loads(row["params"])["image_preset"] == "create_image"
 
 def test_video_rejected_409(client):
     # Video senza immagine di partenza: 422 onesto, non 409 (gate rimosso).
@@ -172,8 +180,25 @@ def test_get_and_delete_asset(client):
     assert client.get(f"/api/v1/assets/{aid}/download").status_code == 404
     assert client.delete(f"/api/v1/assets/{aid}").status_code == 404
 
+def test_gpu_endpoint_shape(client, monkeypatch):
+    import app.main as m
+    import subprocess as _sp
+    real_run = _sp.run
+    def fake_run(*a, **k):
+        class R:
+            returncode = 0
+            stdout = "0, Test GPU, 42, 7, 1000, 8000\n1, Test GPU 2, 40, 0, 500, 8000\n"
+            stderr = ""
+        return R()
+    monkeypatch.setattr(_sp, "run", fake_run)
+    monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/nvidia-smi")
+    r = client.get("/api/v1/gpu")
+    assert r.status_code == 200, r.text
+    g = r.json()
+    assert len(g) == 2 and g[0]["temp_c"] == 42 and g[1]["mem_total_mb"] == 8000
+
 @pytest.mark.asyncio
-async def test_video_worker_done_path(client, tmp_path, monkeypatch):
+async def test_image_worker_done_path(client, tmp_path, monkeypatch):
     # Worker completo con manager finto: nessun render reale, nessun ffmpeg.
     # ffprobe/ffmpeg assenti -> probe {} e thumb None, senza eccezioni (fail-soft).
     import asyncio as _aio
@@ -223,3 +248,59 @@ async def test_video_worker_done_path(client, tmp_path, monkeypatch):
         cx.close()
     import app.config as cfg
     assert (cfg.ASSETS_DIR / rel).is_file()
+
+@pytest.mark.asyncio
+async def test_image_worker_done_path(client, tmp_path, monkeypatch):
+    # Image via manager (preset create_image): nessun Comfy diretto, nessun render reale.
+    import asyncio as _aio
+    import app.db as dbmod
+    import app.main as m
+    from PIL import Image
+    png = tmp_path / "out.png"
+    Image.new("RGB", (320, 240), "blue").save(png)
+    jid = dbmod.new_id("job")
+    cx = dbmod.connect()
+    try:
+        cx.execute(
+            "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (jid, "image", "queued", "comfyui", "qwen-image-2.1-UC-Q4_K_M", "gatto",
+             json.dumps({"width": 768, "height": 768, "steps": 12, "seed": 3,
+                         "asset_ids": [], "image_preset": "create_image"}),
+             dbmod.now(), dbmod.now()))
+        cx.commit()
+    finally:
+        cx.close()
+    seen = {}
+    class FakeMgr:
+        async def submit_image(self, preset, params):
+            seen.update(preset=preset, params=params)
+            assert preset == "create_image"
+            return {"job_id": "mid3", "status": "queued", "preset": preset}
+        async def get_job(self, mid):
+            assert mid == "mid3"
+            return {"job_id": mid, "status": "done", "progress": 1.0,
+                    "result_paths": [str(png)], "error": ""}
+        async def cancel_job(self, mid):
+            return {"job_id": mid, "status": "cancelled"}
+    monkeypatch.setattr(m, "_manager", lambda: FakeMgr())
+    async def no_sleep(*a, **k):
+        return None
+    monkeypatch.setattr(_aio, "sleep", no_sleep)
+    await m._run_one_image(jid)
+    assert seen["params"]["width"] == 768
+    cx = dbmod.connect()
+    try:
+        row = cx.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+        assert row["status"] == "completed", row["error"]
+        outs = json.loads(row["outputs"])
+        assert len(outs) == 1
+        a = cx.execute("SELECT * FROM assets WHERE id=?", (outs[0],)).fetchone()
+        assert a["kind"] == "image"
+        assert a["width"] == 320 and a["height"] == 240
+        rel = a["rel_path"]
+    finally:
+        cx.close()
+    import app.config as cfg
+    assert (cfg.ASSETS_DIR / rel).is_file()
+    assert (cfg.THUMBS_DIR / (outs[0] + ".jpg")).is_file()

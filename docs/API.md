@@ -5,6 +5,7 @@ Base: `http(s)://<backend-privato>/api/v1`. Auth: `Authorization: Bearer <pairin
 - `GET /health` → `{status, backend_version, api_version}` (no-auth, NON usare per test connessione)
 - `GET /capabilities` → task image/video con `enabled`, `disabled_reason`, `supports_reference`
 - `GET /status` → `{backend, comfy:{queue|error}, manager, queue_length, storage}`
+- `GET /gpu` → `[{index, name, temp_c, util_pct, mem_used_mb, mem_total_mb}]` live da `nvidia-smi` (503 se assente). Usato dal quadro GPU in Impostazioni.
 - `POST /jobs` `{taskType:image|video, prompt, engine?, model?, negative_prompt?, width?, height?, steps?, seed?, style_preset?, asset_ids?, idempotency_key?}` → `201 Job`. Video = image-to-video (richiede `asset_ids[0]` come start frame; preset manager turbo 16:9/9:16, ~5s).
 - `GET /jobs?limit=` · `GET /jobs/{id}` · `POST /jobs/{id}/cancel` (queued→cancelled subito, running→cancelling+interrupt)
 - `GET /events` SSE `{id,status}` + heartbeat `: ping` ogni ~30s

@@ -81,6 +81,14 @@ class AssetOut(BaseModel):
     duration: float | None = None
     created_at: str
 
+class GpuOut(BaseModel):
+    index: int
+    name: str
+    temp_c: float | None = None
+    util_pct: float | None = None
+    mem_used_mb: float | None = None
+    mem_total_mb: float | None = None
+
 class ProjectIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
