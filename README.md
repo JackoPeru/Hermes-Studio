@@ -42,6 +42,7 @@ Apri `android/` in Android Studio (se manca il wrapper: `gradle wrapper`), impos
 
 ## Limiti V2 onesti
 - Video = solo image-to-video H3 turbo (~5s, 1344×768 / 768×1344), start frame obbligatorio dalla libreria. Text-to-video: nessun preset nel manager (solo template grezzo mai validato) → non offerto.
+- Immagini: formati conformi all'area cap manager (1:1→992×992, 16:9→1344×768, 9:16→768×1344), passi Bozza 12 / Alta 20 / Ultra 28.
 - Edit/reference Qwen: pipeline non validata end-to-end → UI disabilitata.
 - Niente ETA inventate: stato + step; progresso reale solo quando Comfy/manager lo riportano.
 - Concorrenza 1 job (VRAM reale); coordinamento via GPU-manager, mai kill/reset.

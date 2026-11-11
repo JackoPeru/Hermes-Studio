@@ -8,7 +8,7 @@ Base: `http(s)://<backend-privato>/api/v1`. Auth: `Authorization: Bearer <pairin
 - `GET /gpu` → `[{index, name, temp_c, util_pct, mem_used_mb, mem_total_mb}]` live da `nvidia-smi` (503 se assente). Usato dal quadro GPU in Impostazioni.
 - `POST /jobs` `{taskType:image|video, prompt, engine?, model?, negative_prompt?, width?, height?, steps?, seed?, style_preset?, asset_ids?, idempotency_key?}` → `201 Job`. Video = image-to-video (richiede `asset_ids[0]` come start frame; preset manager turbo 16:9/9:16, ~5s).
 - `GET /jobs?limit=` · `GET /jobs/{id}` · `POST /jobs/{id}/cancel` (queued→cancelled subito, running→cancelling+interrupt)
-- `GET /events` SSE `{id,status}` + heartbeat `: ping` ogni ~30s
+- `GET /events` SSE `{id,status}` + heartbeat `: ping` ogni ~15s, header anti-buffering (`Cache-Control: no-cache`, `X-Accel-Buffering: no`) per i proxy. L'app ha watchdog 45s + backstop poll: nessun freeze silenzioso.
 - `POST /assets/upload` (multipart streaming, JPEG/PNG/WebP ≤25 MB, scrittura atomica) → `{asset_upload_id, path, bytes}`. Errori: `413` oltre limite, `415` tipo non supportato.
 - `GET /assets[?kind&favorite]` (combo supportata) · `GET /assets/{id}` · `GET /assets/{id}/download` · `GET /assets/{id}/thumbnail` (auth richieste) · `POST /assets/{id}/favorite?on=` (404 se asset assente) · `DELETE /assets/{id}` (file+thumb+db+preferiti/progetti, 404 se assente)
 - `GET/POST /projects` · `POST /projects/{pid}/assets/{aid}` (404 se project/asset assenti)

@@ -728,9 +728,9 @@ async def events(_: None = Depends(require_auth)):
                 for r in rows:
                     last = max(last, r["updated_at"])
                     yield f"data: {json.dumps({'id': r['id'], 'status': r['status']})}\n\n"
-                # Heartbeat ogni ~30s: tiene viva la SSE dietro proxy/timeout NAT.
+                # Heartbeat ogni ~15s: tiene viva la SSE dietro proxy/timeout NAT.
                 beats += 1
-                if beats >= 15:
+                if beats >= 7:
                     yield ": ping\n\n"
                     beats = 0
                 await asyncio.sleep(2.0)
@@ -741,7 +741,12 @@ async def events(_: None = Depends(require_auth)):
                 cx.close()
             except Exception:
                 pass
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    # no-cache/no-buffer: i proxy intermedi (es. tailscale serve) non devono
+    # accumulare gli eventi, altrimenti l'app li vede in ritardo o mai.
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @app.post("/api/v1/assets/upload")

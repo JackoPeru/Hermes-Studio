@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -22,6 +24,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
@@ -227,18 +231,24 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
         go(if (p.isNullOrBlank()) "create" else "create?prompt=" + Uri.encode(p))
     }
     var live by remember { mutableStateOf(false) }
+    var lastEventAt by remember { mutableStateOf(0L) }
+    var esRef by remember { mutableStateOf<okhttp3.sse.EventSource?>(null) }
+    fun markEvent() { lastEventAt = System.currentTimeMillis() }
     LaunchedEffect(Unit) { refresh() }
     // SSE live dal server: aggiornamento istantaneo senza polling (perf + batteria).
+    // Watchdog: se il proxy mette in buffer e non arriva nulla per 45s, si torna al poll.
     DisposableEffect(Unit) {
-        var es: okhttp3.sse.EventSource? = null
         val task = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                es = repo.watchEvents(object : okhttp3.sse.EventSourceListener() {
+                esRef = repo.watchEvents(object : okhttp3.sse.EventSourceListener() {
                     override fun onOpen(e: okhttp3.sse.EventSource, response: okhttp3.Response) {
-                        scope.launch { live = true }
+                        scope.launch { live = true; markEvent() }
                     }
                     override fun onEvent(e: okhttp3.sse.EventSource, id: String?, type: String?, data: String) {
-                        scope.launch(kotlinx.coroutines.Dispatchers.IO) { refreshLight() }
+                        scope.launch {
+                            markEvent()
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { refreshLight() }
+                        }
                     }
                     override fun onFailure(e: okhttp3.sse.EventSource, t: Throwable?, r: okhttp3.Response?) {
                         scope.launch { live = false }
@@ -246,13 +256,28 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
                 })
             } catch (_: Exception) { scope.launch { live = false } }
         }
-        onDispose { task.cancel(); try { es?.cancel() } catch (_: Exception) {} }
+        onDispose { task.cancel(); try { esRef?.cancel() } catch (_: Exception) {}; esRef = null }
     }
-    // Fallback se SSE non disponibile: poll leggero ogni 15s.
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(10000)
+            if (live && System.currentTimeMillis() - lastEventAt > 45000) {
+                try { esRef?.cancel() } catch (_: Exception) {}
+                esRef = null
+                live = false
+            }
+        }
+    }
+    // Fallback se SSE non disponibile + rete di sicurezza ogni 30s comunque.
     LaunchedEffect(live) {
         if (!live) {
             while (true) {
                 kotlinx.coroutines.delay(15000)
+                refreshLight()
+            }
+        } else {
+            while (true) {
+                kotlinx.coroutines.delay(30000)
                 refreshLight()
             }
         }
@@ -434,6 +459,7 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
     var preset by remember { mutableStateOf("cinematico") }
     var format by remember { mutableStateOf("1:1") }
     var quality by remember { mutableStateOf("Alta") }
+    var resolution by remember { mutableStateOf("Alta") }
     var count by remember { mutableStateOf(1) }
     var state by remember { mutableStateOf("Pronto") }
     var recent by remember { mutableStateOf<List<Asset>>(emptyList()) }
@@ -446,7 +472,25 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
         StylePreset("realistico", "Realistico", Icons.Filled.CameraAlt),
         StylePreset("fantasy", "Fantasy", Icons.Filled.AutoAwesome)
     )
-    val dims = mapOf("1:1" to (992 to 992), "16:9" to (1344 to 768), "9:16" to (768 to 1344))
+    // Risoluzioni verificate: tutte sotto il cap area manager (1032192 px) e multipli di 32.
+    fun resOptions(f: String): List<Triple<String, Int, Int>> = when (f) {
+        "16:9" -> listOf(
+            Triple("Alta · 1344×768", 1344, 768),
+            Triple("Media · 960×544", 960, 544),
+            Triple("Bassa · 832×480", 832, 480)
+        )
+        "9:16" -> listOf(
+            Triple("Alta · 768×1344", 768, 1344),
+            Triple("Media · 544×960", 544, 960),
+            Triple("Bassa · 480×832", 480, 832)
+        )
+        else -> listOf(
+            Triple("Alta · 992×992", 992, 992),
+            Triple("Media · 768×768", 768, 768),
+            Triple("Bassa · 512×512", 512, 512)
+        )
+    }
+    val stepsFor = mapOf("Bozza" to 12, "Alta" to 20, "Ultra" to 28)
 
     suspend fun refreshRecent() {
         try {
@@ -513,10 +557,23 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             }
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.weight(1f)) { DropDownField("Formato", format, listOf("1:1", "16:9", "9:16"), { format = it }, Icons.Filled.Crop) }
-                Box(Modifier.weight(1f)) { DropDownField("Qualità", quality, listOf("Bozza", "Alta"), { quality = it }, Icons.Filled.Tune) }
-                Box(Modifier.weight(1f)) { DropDownField("Numero", "$count", listOf("1", "2", "4"), { count = it.toInt() }, Icons.Filled.Layers) }
+            val resOpts = resOptions(format)
+            val resSel = resOpts.firstOrNull { it.first == resolution } ?: resOpts.first()
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.weight(1f)) { DropDownField("Formato", format, listOf("1:1", "16:9", "9:16"), { format = it }, Icons.Filled.Crop) }
+                    Box(Modifier.weight(1f)) {
+                        DropDownField(
+                            "Risoluzione", resSel.first,
+                            resOpts.map { it.first },
+                            { resolution = it }, Icons.Filled.AspectRatio
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.weight(1f)) { DropDownField("Qualità", quality, listOf("Bozza", "Alta", "Ultra"), { quality = it }, Icons.Filled.Tune) }
+                    Box(Modifier.weight(1f)) { DropDownField("Numero", "$count", listOf("1", "2", "4"), { count = it.toInt() }, Icons.Filled.Layers) }
+                }
             }
         }
         item {
@@ -567,16 +624,17 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
         }
         item {
             GradientButton("Genera immagine", Icons.Filled.AutoAwesome, enabled = prompt.isNotBlank(), onClick = {
-                val d = dims[format] ?: (1024 to 1024)
-                val steps = if (quality == "Bozza") 12 else 20
+                val opts = resOptions(format)
+                val sel = opts.firstOrNull { it.first == resolution } ?: opts.first()
+                val steps = stepsFor[quality] ?: 20
                 state = "Accodamento…"
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         val api = repo.api()
                         repeat(count) {
-                            api.createJob(JobCreate("image", prompt, null, null, null, d.first, d.second, steps, null, preset, emptyList(), "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
+                            api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, preset, emptyList(), "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
                         }
-                        state = "Inserito in coda: segui lo stato in Home."
+                        state = "Inserito in coda (${sel.second}×${sel.third}, $steps passi): segui lo stato in Home."
                         refreshRecent()
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
@@ -1120,21 +1178,36 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
     var queueLen by remember { mutableStateOf<Int?>(null) }
     var gpus by remember { mutableStateOf<List<GpuInfo>>(emptyList()) }
     var gpuErr by remember { mutableStateOf<String?>(null) }
+    var gpuLive by remember { mutableStateOf(false) }
     val updateState by updater.state.collectAsState()
-    suspend fun refreshSystem() {
-        try {
-            val s = repo.api().status()
-            storage = s.storage; queueLen = s.queue_length
-        } catch (_: Exception) {}
+    suspend fun refreshSystem(includeStorage: Boolean = true) {
+        if (includeStorage) {
+            try {
+                val s = repo.api().status()
+                storage = s.storage; queueLen = s.queue_length
+            } catch (_: Exception) {}
+        }
         try {
             gpus = repo.api().gpu()
             gpuErr = null
-        } catch (e: Exception) { gpuErr = e.message }
+            gpuLive = true
+        } catch (e: Exception) { gpuErr = e.message; gpuLive = false }
     }
     LaunchedEffect(Unit) {
         base = repo.baseUrl(); tok = repo.token()
         scope.launch { refreshSystem() }
         scope.launch { updater.checkForUpdates() }
+    }
+    // GPU live: refresh ogni 5s finché Impostazioni è visibile (perf: 1 call leggera).
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(5000)
+            try {
+                gpus = repo.api().gpu()
+                gpuErr = null
+                gpuLive = true
+            } catch (e: Exception) { gpuErr = e.message; gpuLive = false }
+        }
     }
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 16.dp).imePadding(),
@@ -1185,9 +1258,10 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         SectionHeader(Icons.Filled.Memory, "GPU server")
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(onClick = { scope.launch(kotlinx.coroutines.Dispatchers.IO) { refreshSystem() } }, contentPadding = PaddingValues(horizontal = 4.dp)) {
-                            Icon(Icons.Filled.Refresh, null, tint = AccentV, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.weight(1f))
+                        if (gpuLive) Text("· Live", color = Good, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        IconButton(onClick = { scope.launch(kotlinx.coroutines.Dispatchers.IO) { refreshSystem(false) } }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Filled.Refresh, "Aggiorna GPU", tint = AccentV, modifier = Modifier.size(18.dp))
                         }
                     }
                     if (gpuErr != null) {
@@ -1285,11 +1359,12 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
 // ---------- Dettaglio asset (V2) ----------
 
 @Composable
-fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String) -> Unit, onDeleted: () -> Unit) {
+fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String) -> Unit, onDeleted: () -> Unit, onViewer: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     var asset by remember { mutableStateOf<Asset?>(null) }
     var jobPrompt by remember { mutableStateOf<String?>(null) }
+    var promptFull by remember { mutableStateOf(false) }
     var isFav by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf("") }
     var showDelete by remember { mutableStateOf(false) }
@@ -1320,7 +1395,15 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
         item { Text("Dettaglio", fontWeight = FontWeight.Bold, fontSize = 28.sp) }
         item {
             Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, CardBorder)) {
-                Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(CardShape).background(Color(0xFF141428))) {
+                val ar = asset?.let { a ->
+                    if (a.width != null && a.height != null && a.height > 0) {
+                        (a.width.toFloat() / a.height).coerceIn(0.4f, 2.5f)
+                    } else 1f
+                } ?: 1f
+                Box(
+                    Modifier.fillMaxWidth().aspectRatio(ar).clip(CardShape)
+                        .background(Color(0xFF141428)).clickable { asset?.let { onViewer("viewer/${it.id}") } }
+                ) {
                     if (req != null && loader != null && asset != null) {
                         AsyncImage(
                             model = req, imageLoader = loader!!, contentDescription = asset!!.id,
@@ -1365,7 +1448,12 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
                         if (a.width != null && a.height != null) Text("Risoluzione: ${a.width} × ${a.height}", color = Muted, fontSize = 14.sp)
                         formatDuration(a.duration)?.let { Text("Durata: $it", color = Muted, fontSize = 14.sp) }
                         a.job_id?.let { Text("Job: $it", color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                        jobPrompt?.let { Text(it, fontSize = 14.sp, maxLines = 4, overflow = TextOverflow.Ellipsis) }
+                        jobPrompt?.let {
+                            Text(it, fontSize = 14.sp, maxLines = if (promptFull) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis)
+                            TextButton(onClick = { promptFull = !promptFull }, contentPadding = PaddingValues(0.dp)) {
+                                Text(if (promptFull) "Mostra meno" else "Mostra tutto", color = AccentV, fontSize = 13.sp)
+                            }
+                        }
                         if (msg.isNotBlank()) Text(msg, color = Warn, fontSize = 13.sp)
                     }
                 }
@@ -1574,3 +1662,55 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
         }
     }
 }
+
+// ---------- Visore a tutto schermo con zoom ----------
+
+@Composable
+fun FullscreenViewerScreen(repo: StudioRepo, assetId: String, onClose: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var url by remember { mutableStateOf<String?>(null) }
+    var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
+    var scale by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    val req = rememberImgReq(url, loader)
+    val ts = rememberTransformableState { zoom, pan, _ ->
+        scale = (scale * zoom).coerceIn(1f, 5f)
+        offset = if (scale <= 1f) Offset.Zero else offset + pan
+    }
+    LaunchedEffect(assetId) {
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val a = repo.api().asset(assetId)
+                loader = repo.imageLoader()
+                url = repo.assetUrl(a, false) ?: repo.assetUrl(a, true)
+            } catch (_: Exception) {}
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        if (req != null && loader != null) {
+            AsyncImage(
+                model = req, imageLoader = loader!!, contentDescription = assetId,
+                modifier = Modifier.fillMaxSize().transformable(ts)
+                    .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y),
+                contentScale = ContentScale.Fit
+            )
+        }
+        Surface(
+            shape = CircleShape, color = Color.Black.copy(alpha = 0.55f),
+            modifier = Modifier.align(Alignment.TopStart).padding(16.dp),
+            onClick = onClose
+        ) {
+            Icon(Icons.Filled.Close, "Chiudi", tint = Color.White, modifier = Modifier.padding(10.dp).size(22.dp))
+        }
+        if (scale > 1f) {
+            Surface(
+                shape = RoundedCornerShape(8.dp), color = Color.Black.copy(alpha = 0.55f),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+                onClick = { scale = 1f; offset = Offset.Zero }
+            ) {
+                Text("Tocca per ripristinare", color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+            }
+        }
+    }
+}
+

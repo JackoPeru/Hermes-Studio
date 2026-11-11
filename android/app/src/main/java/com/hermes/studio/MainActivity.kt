@@ -102,7 +102,8 @@ class MainActivity : ComponentActivity() {
                             AssetDetailScreen(
                                 repo, backStack.arguments?.getString("id") ?: "",
                                 onReusePrompt = { nav.navigate(it) },
-                                onDeleted = { nav.popBackStack() }
+                                onDeleted = { nav.popBackStack() },
+                                onViewer = { nav.navigate(it) }
                             )
                         }
                         composable(
@@ -113,6 +114,15 @@ class MainActivity : ComponentActivity() {
                                 repo, backStack.arguments?.getString("id") ?: "",
                                 onReusePrompt = { nav.navigate(it) },
                                 onOpenAsset = { nav.navigate(it) }
+                            )
+                        }
+                        composable(
+                            "viewer/{id}",
+                            arguments = listOf(navArgument("id") { type = NavType.StringType })
+                        ) { backStack ->
+                            FullscreenViewerScreen(
+                                repo, backStack.arguments?.getString("id") ?: "",
+                                onClose = { nav.popBackStack() }
                             )
                         }
                         composable("settings") { SettingsScreen(repo, updater) }

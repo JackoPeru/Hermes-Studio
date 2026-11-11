@@ -1,5 +1,12 @@
 # Video H3 — fatti verificati sul server (2026-11-11)
 
+Il manager NON ha gate su H3: i preset turbo sono abilitati e gli submit passano
+(verificato con submit reale). `h3.enabled` in gpu-manager.yaml non è letto da
+alcun codice (solo documentazione): impostato a `true` dal proprietario in data
+odierna. `h3_ready=false` è un check obsoleto (cerca un nome file del text encoder
+diverso da quello usato dai template, che invece esiste e funziona).
+Attivazione reale = render andato a buon fine, non flag.
+
 Tutto sotto è rilevato via SSH read-only su `hermes`, non ipotizzato.
 
 ## Pesi e template
