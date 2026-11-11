@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- V1: backend privato su tailnet HTTP (tailscale serve --http=8650).
+    <!-- V1: backend privato su tailnet HTTP (tailscale serve http 8650).
          tailscale serve risponde solo al nome MagicDNS, non all'IP letterale:
          serve http://hermes.tail85940c.ts.net:8650 (non http://100.94.223.14:8650). -->
     <domain-config cleartextTrafficPermitted="true">
