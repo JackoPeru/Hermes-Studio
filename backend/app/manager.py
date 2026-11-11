@@ -12,9 +12,11 @@ class ManagerClient:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     async def status(self) -> dict:
-        async with (self._client or httpx.AsyncClient(timeout=15)) as cx:
-            # NOTE: when a shared client is passed we must not close it; httpx handles anyway here
-            # for simplicity tests inject via get/post monkeypatching at adapter level.
+        if self._client is not None:
+            r = await self._client.get(f"{self.base_url}/status", headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+        async with httpx.AsyncClient(timeout=15) as cx:
             r = await cx.get(f"{self.base_url}/status", headers=self._headers())
             r.raise_for_status()
             return r.json()

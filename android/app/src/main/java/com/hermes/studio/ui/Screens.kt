@@ -19,7 +19,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.hermes.studio.*
+import com.hermes.studio.update.AppUpdateManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 val Bg = Color(0xFF0B0B12)
@@ -51,24 +54,45 @@ fun HeaderChip(online: Boolean, label: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
+fun HomeScreen(repo: StudioRepo, updater: AppUpdateManager, onNav: (String) -> Unit) {
     var caps by remember { mutableStateOf<Capabilities?>(null) }
     var jobs by remember { mutableStateOf<List<Job>>(emptyList()) }
     var assets by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var urls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var err by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
+    val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
+    val loader = remember { mutableStateOf<coil.ImageLoader?>(null) }
+
+    suspend fun refresh() {
         try {
             val api = repo.api()
-            caps = api.capabilities(); jobs = api.jobs(10); assets = api.assets()
+            caps = api.capabilities()
+            jobs = api.jobs(10)
+            val al = api.assets()
+            assets = al
+            loader.value = repo.imageLoader()
+            urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+            err = null
         } catch (e: Exception) { err = e.message }
+    }
+    LaunchedEffect(Unit) {
+        refresh()
+        // Polling coda ogni 5s (SSE server esiste ma V1 usa polling semplice e robusto).
+        while (true) {
+            delay(5000)
+            try {
+                val api = repo.api()
+                jobs = api.jobs(10)
+            } catch (_: Exception) {}
+        }
     }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
-            // Hero compatto (mockup 01 senza ingombrante decorativo a tutto schermo)
             Card(colors = CardDefaults.cardColors(containerColor = Card)) {
                 Column(Modifier.padding(18.dp)) {
                     Text("Bentornato in Hermes Studio", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("Crea immagini e video con l'AI del tuo server, in modo semplice e veloce.",
+                    Text("Crea immagini con l'AI del tuo server, in modo semplice e veloce.",
                         color = Color.Gray)
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -84,12 +108,22 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
         }
         if (err != null) item { Text("Offline: $err — i job restano sul server e si recuperano al ritorno.", color = Color(0xFFFF9D9D)) }
         item {
-            Text("Coda di rendering (Server)", fontWeight = FontWeight.SemiBold)
-            val active = jobs.filter { it.status in listOf("queued", "preparing", "running") }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Coda di rendering (Server)", fontWeight = FontWeight.SemiBold)
+                TextButton(onClick = { scope.launch { refresh() } }) { Text("Aggiorna") }
+            }
+            val active = jobs.filter { it.status in listOf("queued", "preparing", "running", "cancelling") }
             Text(if (active.isEmpty()) "Nessuna attività in corso" else "${active.size} attività in corso", color = Color.Gray)
-            active.take(3).forEach { j ->
-                ListItem(headlineContent = { Text(j.prompt.take(60)) },
-                    supportingContent = { Text("${j.status} · ${j.engine}") })
+            active.take(5).forEach { j ->
+                ListItem(
+                    headlineContent = { Text(j.prompt.take(60)) },
+                    supportingContent = { Text("${j.status} · ${j.engine} · ${(j.progress ?: 0.0)}") },
+                    trailingContent = {
+                        if (j.status in listOf("queued", "running", "preparing")) {
+                            TextButton(onClick = { scope.launch { try { repo.api().cancel(j.id); refresh() } catch (_: Exception) {} } }) { Text("Annulla") }
+                        }
+                    }
+                )
             }
         }
         item {
@@ -125,8 +159,15 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(assets.take(6)) { a ->
                     ElevatedCard(Modifier.size(150.dp, 170.dp)) {
-                        AsyncImage(model = a.thumb ?: a.path, contentDescription = a.id,
-                            modifier = Modifier.fillMaxWidth().height(120.dp), contentScale = ContentScale.Crop)
+                        val url = urls[a.id]
+                        if (url != null && loader.value != null) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(ctx).data(url).crossfade(true).build(),
+                                imageLoader = loader.value!!,
+                                contentDescription = a.id,
+                                modifier = Modifier.fillMaxWidth().height(120.dp), contentScale = ContentScale.Crop
+                            )
+                        }
                         Text(a.id.take(14), modifier = Modifier.padding(6.dp), maxLines = 1)
                     }
                 }
@@ -145,9 +186,16 @@ fun CreateImageScreen(repo: StudioRepo) {
     var count by remember { mutableStateOf(1) }
     var state by remember { mutableStateOf("Pronto") }
     var recent by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var recentUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     val ctx = LocalContext.current
+    var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
     LaunchedEffect(Unit) {
-        try { recent = repo.api().assets("image").take(6) } catch (_: Exception) {}
+        try {
+            val al = repo.api().assets("image").take(6)
+            recent = al
+            loader = repo.imageLoader()
+            recentUrls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+        } catch (_: Exception) {}
     }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Genera immagine", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
@@ -168,9 +216,8 @@ fun CreateImageScreen(repo: StudioRepo) {
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val formats = mapOf("1:1" to (1024 to 1024), "16:9" to (1344 to 768), "9:16" to (768 to 1344))
-                var f by remember { mutableStateOf(format) }
                 formats.keys.forEach { k ->
-                    FilterChip(selected = f == k, onClick = { f = k; format = k }, label = { Text(k) })
+                    FilterChip(selected = format == k, onClick = { format = k }, label = { Text(k) })
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -181,7 +228,6 @@ fun CreateImageScreen(repo: StudioRepo) {
                     FilterChip(selected = count == n, onClick = { count = n }, label = { Text("$n") })
                 }
             }
-            // Riferimenti: disabilitati finché edit non validato (niente pulsanti morti)
             ElevatedCard {
                 Column(Modifier.padding(12.dp)) {
                     Text("Immagini di riferimento (opzionale)", fontWeight = FontWeight.SemiBold)
@@ -199,10 +245,12 @@ fun CreateImageScreen(repo: StudioRepo) {
                     try {
                         val api = repo.api()
                         repeat(count) {
-                            api.createJob(JobCreate("image", prompt, dims.first, dims.second, steps, null, preset,
-                                "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
+                            api.createJob(
+                                JobCreate("image", prompt, null, null, null, dims.first, dims.second, steps, null, preset,
+                                    emptyList(), "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}")
+                            )
                         }
-                        state = "Inserito in coda: apri Dettaglio/ Coda per lo stato reale."
+                        state = "Inserito in coda: apri Home per lo stato reale (la coda sopravvive alla chiusura)."
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
                 }
             }, enabled = prompt.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
@@ -215,7 +263,15 @@ fun CreateImageScreen(repo: StudioRepo) {
             Text("Generazioni recenti", fontWeight = FontWeight.SemiBold)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(recent) { a ->
-                    AsyncImage(a.thumb ?: a.path, a.id, modifier = Modifier.size(110.dp), contentScale = ContentScale.Crop)
+                    val url = recentUrls[a.id]
+                    if (url != null && loader != null) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(ctx).data(url).crossfade(true).build(),
+                            imageLoader = loader!!,
+                            contentDescription = a.id,
+                            modifier = Modifier.size(110.dp), contentScale = ContentScale.Crop
+                        )
+                    }
                 }
             }
         }
@@ -233,7 +289,7 @@ fun CreateVideoScreen() {
                     Text("Video non disponibile su questo server", fontWeight = FontWeight.Bold)
                     Text("LICENSE_GATE: h3.enabled=false — la licenza community MiniMax esclude EU/Italy. " +
                         "I pesi sono presenti ma il manager li tiene disabilitati; nessuna generazione H3 finché " +
-                        "il proprietario non fornisce autorizzazione scritta MiniMax. Documentato in DISCOVERY.md.",
+                        "il proprietario non fornisce autorizzazione scritta MiniMax.",
                         style = MaterialTheme.typography.bodyMedium, color = Color(0xFFFFC9D1))
                     Text("L'app mostra solo controlli realmente supportati: per ora nessun flusso text-to-video / image-to-video.",
                         color = Color.Gray, style = MaterialTheme.typography.bodySmall)
@@ -256,15 +312,28 @@ fun LibraryScreen(repo: StudioRepo) {
     var q by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf("Tutto") }
     var assets by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var urls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var err by remember { mutableStateOf<String?>(null) }
+    val ctx = LocalContext.current
+    var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
     fun reload() {
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val all = repo.api().assets()
-                assets = all.filter {
-                    (filter == "Tutto" || (filter == "Immagini" && it.kind == "image") || (filter == "Video" && it.kind == "video")) &&
-                    (q.isBlank() || it.id.contains(q, true))
+                val api = repo.api()
+                val fav = filter == "Preferiti"
+                val kind = when (filter) {
+                    "Immagini" -> "image"
+                    "Video" -> "video"
+                    else -> null
                 }
+                val all = if (fav) api.assets(favorite = true) else api.assets(kind = kind)
+                loader = repo.imageLoader()
+                val map = all.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+                urls = map
+                assets = all.filter { a ->
+                    q.isBlank() || a.id.contains(q, true) || (a.job_id ?: "").contains(q, true)
+                }
+                err = null
             } catch (e: Exception) { err = e.message }
         }
     }
@@ -273,7 +342,7 @@ fun LibraryScreen(repo: StudioRepo) {
         Text("Libreria", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text("Tutte le tue generazioni, organizzate sul server.", color = Color.Gray)
         OutlinedTextField(value = q, onValueChange = { q = it; reload() }, modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Cerca nelle tue generazioni…") }, leadingIcon = { Icon(Icons.Filled.Search, null) })
+            placeholder = { Text("Cerca per ID job o asset…") }, leadingIcon = { Icon(Icons.Filled.Search, null) })
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(listOf("Tutto", "Immagini", "Video", "Preferiti")) { f ->
                 FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f) })
@@ -284,8 +353,16 @@ fun LibraryScreen(repo: StudioRepo) {
             horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
             items(assets) { a ->
                 ElevatedCard {
-                    AsyncImage(a.thumb ?: a.path, a.id, modifier = Modifier.fillMaxWidth().height(140.dp),
-                        contentScale = ContentScale.Crop)
+                    val url = urls[a.id]
+                    if (url != null && loader != null) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(ctx).data(url).crossfade(true).build(),
+                            imageLoader = loader!!,
+                            contentDescription = a.id,
+                            modifier = Modifier.fillMaxWidth().height(140.dp),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
                     Text(a.id.take(16), modifier = Modifier.padding(6.dp), maxLines = 1,
                         style = MaterialTheme.typography.labelMedium)
                 }
@@ -295,14 +372,15 @@ fun LibraryScreen(repo: StudioRepo) {
 }
 
 @Composable
-fun SettingsScreen(repo: StudioRepo) {
+fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
     val scope = rememberCoroutineScope()
     var base by remember { mutableStateOf("") }
     var tok by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
-    val ctx = LocalContext.current
+    val updateState by updater.state.collectAsState()
     LaunchedEffect(Unit) {
         base = repo.baseUrl(); tok = repo.token()
+        scope.launch { updater.checkForUpdates() }
     }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("Impostazioni", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
@@ -316,8 +394,8 @@ fun SettingsScreen(repo: StudioRepo) {
                     scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                         try {
                             repo.save(base, tok)
-                            repo.api().health()
-                            msg = "Connessione OK. Token salvato in DataStore (Keystore su device supportati)."
+                            repo.testConnection()
+                            msg = "Connessione OK (capabilities autenticate). Token salvato in DataStore."
                         } catch (e: Exception) { msg = "Errore: ${e.message}" }
                     }
                 }) { Text("Salva e testa") }
@@ -325,6 +403,46 @@ fun SettingsScreen(repo: StudioRepo) {
             Text(msg, color = Color.Gray)
             Text("Nessuna porta pubblica, nessuna telemetria esterna, nessun cloud. Solo tailnet privata + bearer.",
                 color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+        }
+        item {
+            ElevatedCard {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Aggiornamenti app", fontWeight = FontWeight.Bold)
+                    Text("Versione installata ${updateState.currentVersionName} (${updateState.currentVersionCode})",
+                        style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Text(updateState.statusMessage, style = MaterialTheme.typography.bodySmall,
+                        color = if (updateState.signatureBlocked || updateState.lastError != null) Color(0xFFFF9D9D) else Color.Gray)
+                    if (updateState.isDownloading) {
+                        LinearProgressIndicator(progress = { updateState.downloadProgress }, modifier = Modifier.fillMaxWidth())
+                        if (updateState.downloadLabel.isNotBlank()) Text(updateState.downloadLabel, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    }
+                    updateState.lastError?.let { Text(it, color = Color(0xFFFF9D9D), style = MaterialTheme.typography.bodySmall) }
+                    updateState.availableRelease?.let { r ->
+                        Text("Release: ${r.versionName} (${r.versionCode})", color = AccentB, style = MaterialTheme.typography.bodyMedium)
+                        r.notes.take(3).forEach { n -> Text("• $n", style = MaterialTheme.typography.bodySmall, color = Color.Gray) }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { scope.launch { updater.checkForUpdates(force = true) } }, enabled = !updateState.isChecking && !updateState.isDownloading) {
+                            Text(if (updateState.isChecking) "Controllo..." else "Controlla ora")
+                        }
+                        if (updateState.availableRelease != null && updateState.downloadedApkPath == null) {
+                            TextButton(onClick = { scope.launch { updater.downloadAvailableUpdate() } }, enabled = !updateState.isDownloading) { Text("Scarica update") }
+                        }
+                        if (updateState.availableRelease != null && updateState.downloadedApkPath != null) {
+                            TextButton(onClick = { updater.installDownloadedUpdate() }) { Text("Installa") }
+                        }
+                        updateState.rollbackVersionCode?.let { v ->
+                            if (updateState.rollbackApkPath != null) {
+                                TextButton(onClick = { updater.installRollbackUpdate() }) { Text("Torna a $v") }
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Controllo automatico", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = updateState.autoCheckEnabled, onCheckedChange = { updater.setAutoCheckEnabled(it) })
+                    }
+                }
+            }
         }
     }
 }

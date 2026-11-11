@@ -23,11 +23,15 @@ data class Capabilities(val image: List<CapTask> = emptyList(), val video: List<
 data class JobCreate(
     val taskType: String,
     val prompt: String,
+    val engine: String? = null,
+    val model: String? = null,
+    val negative_prompt: String? = null,
     val width: Int? = null,
     val height: Int? = null,
     val steps: Int? = null,
     val seed: Long? = null,
     val style_preset: String? = null,
+    val asset_ids: List<String> = emptyList(),
     val idempotency_key: String? = null
 )
 
@@ -39,6 +43,10 @@ data class Job(
     val engine: String = "",
     val model: String = "",
     val prompt: String = "",
+    val width: Int? = null,
+    val height: Int? = null,
+    val steps: Int? = null,
+    val seed: Long? = null,
     val comfy_prompt_id: String? = null,
     val progress: Double? = null,
     val error: String? = null,
@@ -54,5 +62,7 @@ data class Asset(
     val path: String = "",
     val thumb: String? = null,
     val job_id: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
     val created_at: String = ""
 )

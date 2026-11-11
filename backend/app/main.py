@@ -55,141 +55,183 @@ async def _dispatch_loop() -> None:
     """Background worker: queued -> preparing -> running -> completed/failed.
 
     Survives app close (jobs in SQLite). On backend restart, stale
-    preparing/running jobs are re-queued once (no duplicate Comfy submits:
-    only jobs without comfy_prompt_id are resubmitted; others are reconciled
-    via /history on next loop).
+    preparing jobs (mai sottomessi) tornano queued; running con
+    comfy_prompt_id restano running e vengono riconciliati via /history,
+    running senza prompt_id tornano queued.
     """
     from .config import DB_PATH  # noqa
     await asyncio.sleep(1.0)
     cx = db.connect()
     try:
-        # Recovery: requeue stale active jobs once.
+        # Recovery: preparing mai sottomessi -> queued; running orfani -> queued
+        # solo se senza prompt_id, altrimenti restano running per reconcile.
         cx.execute(
-            "UPDATE jobs SET status='queued', updated_at=? WHERE status IN ('preparing','running')",
+            "UPDATE jobs SET status='queued', updated_at=? WHERE status='preparing'",
+            (db.now(),),
+        )
+        cx.execute(
+            "UPDATE jobs SET status='queued', updated_at=? WHERE status='running' "
+            "AND (comfy_prompt_id IS NULL OR comfy_prompt_id='')",
             (db.now(),),
         )
         cx.commit()
-        while not _stop.is_set():
+    finally:
+        cx.close()
+    while not _stop.is_set():
+        cx = db.connect()
+        try:
             row = cx.execute(
                 "SELECT * FROM jobs WHERE status='queued' ORDER BY created_at LIMIT 1"
             ).fetchone()
-            if row is None:
-                await asyncio.sleep(2.0)
-                continue
-            await _run_one(row["id"])
-            await asyncio.sleep(0.5)
-    finally:
-        cx.close()
+            jid = row["id"] if row else None
+        finally:
+            cx.close()
+        if jid is None:
+            await asyncio.sleep(2.0)
+            continue
+        await _run_one(jid)
+        await asyncio.sleep(0.5)
 
 
 async def _run_one(job_id: str) -> None:
+    import httpx as _httpx
+
     cx = db.connect()
     try:
         row = cx.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if row is None or row["status"] != "queued":
-            cx.close()
+        if row is None or row["status"] not in ("queued", "running"):
             return
+        # Reconcile: se ha già un prompt_id (restart), non risottomettere.
+        existing_prompt_id = row["comfy_prompt_id"]
         params = json.loads(row["params"] or "{}")
-        cx.execute(
-            "UPDATE jobs SET status='preparing', updated_at=? WHERE id=?",
-            (db.now(), job_id),
-        )
-        cx.commit()
-        # Build versioned workflow (image only in V1; video gated at submit).
-        prompt = build_qwen_t2i(
-            prompt=row["prompt"],
-            negative=params.get("negative_prompt") or DEFAULT_NEGATIVE,
-            width=int(params.get("width") or 1024),
-            height=int(params.get("height") or 1024),
-            seed=int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
-            steps=int(params.get("steps") or 20),
-            job_id=job_id,
-        )
-        adapter = _comfy()
-        try:
-            prompt_id = await adapter.submit(prompt)
-        except Exception as e:  # Comfy offline (e.g. LLM resident) -> back to queue w/ error
+        if row["status"] == "queued":
             cx.execute(
-                "UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
-                (f"comfy submit failed: {e}", db.now(), job_id),
+                "UPDATE jobs SET status='preparing', updated_at=? WHERE id=?",
+                (db.now(), job_id),
             )
             cx.commit()
-            return
-        cx.execute(
-            "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
-            (prompt_id, db.now(), job_id),
-        )
-        cx.commit()
-        # Poll history (video-safe timeouts handled per-preset server-side; image default 20 min).
-        for _ in range(600):
-            await asyncio.sleep(2.0)
-            # cancel check
-            cur = db.connect().execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
-            if cur and cur["status"] in ("cancelling", "cancelled"):
-                db.connect().execute(
-                    "UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?", (db.now(), job_id)
-                ).connection.commit() if False else None
-                c2 = db.connect()
-                c2.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?", (db.now(), job_id))
-                c2.commit()
-                c2.close()
-                return
-            try:
-                hist = await adapter.history(prompt_id)
-            except Exception:
-                continue
-            node = (hist.get(prompt_id) or {})
-            outs = node.get("outputs") or {}
-            found: list[str] = []
-            for _nid, o in outs.items():
-                for img in o.get("images", []) if isinstance(o, dict) else []:
-                    try:
-                        data = await adapter.fetch_view(
-                            img["filename"], img.get("subfolder", ""), "output")
-                    except Exception:
-                        continue
-                    rel = f"{job_id}_{safe_name(img['filename'])}"
-                    p = save_bytes(rel, data)
-                    # index asset
-                    c2 = db.connect()
-                    aid = db.new_id("ast")
-                    c2.execute(
-                        "INSERT INTO assets(id,kind,rel_path,job_id,created_at) VALUES(?,?,?,?,?)",
-                        (aid, "image", rel, job_id, db.now()),
-                    )
-                    c2.commit()
-                    c2.close()
-                    try:
-                        from PIL import Image as _I
-                        with _I.open(p) as _im:
-                            w, h = _im.size
-                        c3 = db.connect()
-                        c3.execute("UPDATE assets SET width=?, height=? WHERE id=?", (w, h, aid))
-                        c3.commit()
-                        c3.close()
-                    except Exception:
-                        pass
-                    th = make_thumb(p, aid)
-                    found.append(aid)
-                    _ = th
-            if found:
-                cx.execute(
-                    "UPDATE jobs SET status='completed', progress=1.0, outputs=?, updated_at=? WHERE id=?",
-                    (json.dumps(found), db.now(), job_id),
-                )
-                cx.commit()
-                return
-            st = node.get("status") or {}
-            if st.get("completed") is False and st.get("messages"):
-                pass
-            cx.execute("UPDATE jobs SET progress=MAX(COALESCE(progress,0),0.2), updated_at=? WHERE id=?",
-                       (db.now(), job_id))
-            cx.commit()
-        cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
-                   ("timeout waiting for ComfyUI output", db.now(), job_id))
-        cx.commit()
     finally:
         cx.close()
+
+    cx = db.connect()
+    try:
+        # Un solo client HTTP per tutto il job: niente socket churn nel poll.
+        async with _httpx.AsyncClient(timeout=30) as http:
+            from .comfy import ComfyUIAdapter as _A
+            adapter = _A(COMFY_URL, http)
+            prompt_id = existing_prompt_id
+            if not prompt_id:
+                row2 = cx.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+                if row2 is None:
+                    return
+                params = json.loads(row2["params"] or "{}")
+                # Build versioned workflow (image only in V1; video gated at submit).
+                prompt = build_qwen_t2i(
+                    prompt=row2["prompt"],
+                    negative=params.get("negative_prompt") or DEFAULT_NEGATIVE,
+                    width=int(params.get("width") or 1024),
+                    height=int(params.get("height") or 1024),
+                    seed=int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
+                    steps=int(params.get("steps") or 20),
+                    job_id=job_id,
+                )
+                try:
+                    prompt_id = await adapter.submit(prompt)
+                except Exception as e:  # Comfy offline (e.g. LLM resident)
+                    cx.execute(
+                        "UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                        (f"comfy submit failed: {e}", db.now(), job_id),
+                    )
+                    cx.commit()
+                    return
+                cx.execute(
+                    "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
+                    (prompt_id, db.now(), job_id),
+                )
+                cx.commit()
+            # Poll history (image default 20 min = 600 x 2s).
+            for _ in range(600):
+                await asyncio.sleep(2.0)
+                # cancel check (connessione breve, sempre chiusa)
+                cc = db.connect()
+                try:
+                    cur = cc.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+                    cur_status = cur["status"] if cur else None
+                finally:
+                    cc.close()
+                if cur_status in ("cancelling", "cancelled"):
+                    try:
+                        await adapter.interrupt()
+                    except Exception:
+                        pass
+                    cc2 = db.connect()
+                    try:
+                        cc2.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?", (db.now(), job_id))
+                        cc2.commit()
+                    finally:
+                        cc2.close()
+                    return
+                if cur_status not in ("running", "preparing"):
+                    return
+                try:
+                    hist = await adapter.history(prompt_id)
+                except Exception:
+                    continue
+                node = (hist.get(prompt_id) or {})
+                outs = node.get("outputs") or {}
+                found: list[str] = []
+                for _nid, o in outs.items():
+                    for img in o.get("images", []) if isinstance(o, dict) else []:
+                        try:
+                            data = await adapter.fetch_view(
+                                img["filename"], img.get("subfolder", ""), "output")
+                        except Exception:
+                            continue
+                        rel = f"{job_id}_{safe_name(img['filename'])}"
+                        p = save_bytes(rel, data)
+                        # index asset
+                        c2 = db.connect()
+                        try:
+                            aid = db.new_id("ast")
+                            c2.execute(
+                                "INSERT INTO assets(id,kind,rel_path,job_id,created_at) VALUES(?,?,?,?,?)",
+                                (aid, "image", rel, job_id, db.now()),
+                            )
+                            c2.commit()
+                        finally:
+                            c2.close()
+                        try:
+                            from PIL import Image as _I
+                            with _I.open(p) as _im:
+                                w, h = _im.size
+                            c3 = db.connect()
+                            try:
+                                c3.execute("UPDATE assets SET width=?, height=? WHERE id=?", (w, h, aid))
+                                c3.commit()
+                            finally:
+                                c3.close()
+                        except Exception:
+                            pass
+                        make_thumb(p, aid)
+                        found.append(aid)
+                if found:
+                    cx.execute(
+                        "UPDATE jobs SET status='completed', progress=1.0, outputs=?, updated_at=? WHERE id=?",
+                        (json.dumps(found), db.now(), job_id),
+                    )
+                    cx.commit()
+                    return
+                cx.execute("UPDATE jobs SET progress=MAX(COALESCE(progress,0),0.2), updated_at=? WHERE id=?",
+                           (db.now(), job_id))
+                cx.commit()
+            cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                       ("timeout waiting for ComfyUI output", db.now(), job_id))
+            cx.commit()
+    finally:
+        try:
+            cx.close()
+        except Exception:
+            pass
 
 
 @asynccontextmanager
@@ -209,8 +251,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Hermes Studio", version=BACKEND_VERSION, lifespan=lifespan)
 # Private LAN client (native app). No wildcard CORS for browsers; app is native.
+# OPTIONS incluso per preflight di eventuali WebView/debug locali.
 app.add_middleware(
-    CORSMiddleware, allow_origins=[], allow_methods=["GET", "POST"], allow_headers=["Authorization"],
+    CORSMiddleware, allow_origins=[], allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization"],
 )
 
 
@@ -343,15 +387,14 @@ async def cancel_job(jid: str, _: None = Depends(require_auth)):
             raise HTTPException(404, "job not found")
         if r["status"] in ("completed", "failed", "cancelled"):
             return _job_row_to_out(r)
-        cx.execute("UPDATE jobs SET status='cancelling', updated_at=? WHERE id=?", (db.now(), jid))
-        cx.commit()
-        # best-effort: worker picks up cancelling -> cancelled. Interrupt Comfy queue client-side skipped (no API verified).
-        cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=? AND status='cancelling'",
-                   (db.now(), jid))
-        # only cancel queued jobs immediately; running ones flip on next poll
         if r["status"] == "queued":
+            # Mai partito: cancellazione immediata, niente interrupt.
             cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?", (db.now(), jid))
-        cx.commit()
+            cx.commit()
+        else:
+            # running/preparing: il worker vede 'cancelling', fa /interrupt e flippa a cancelled.
+            cx.execute("UPDATE jobs SET status='cancelling', updated_at=? WHERE id=?", (db.now(), jid))
+            cx.commit()
         return _job_row_to_out(cx.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
     finally:
         cx.close()
@@ -363,6 +406,7 @@ async def events(_: None = Depends(require_auth)):
         cx = db.connect()
         try:
             last = 0.0
+            beats = 0
             while True:
                 rows = cx.execute(
                     "SELECT id,status,updated_at FROM jobs WHERE updated_at>? ORDER BY updated_at LIMIT 50",
@@ -370,30 +414,55 @@ async def events(_: None = Depends(require_auth)):
                 for r in rows:
                     last = max(last, r["updated_at"])
                     yield f"data: {json.dumps({'id': r['id'], 'status': r['status']})}\n\n"
+                # Heartbeat ogni ~30s: tiene viva la SSE dietro proxy/timeout NAT.
+                beats += 1
+                if beats >= 15:
+                    yield ": ping\n\n"
+                    beats = 0
                 await asyncio.sleep(2.0)
+        except asyncio.CancelledError:
+            pass
         finally:
-            cx.close()
+            try:
+                cx.close()
+            except Exception:
+                pass
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.post("/api/v1/assets/upload")
 async def upload_asset(f: UploadFile = File(...), _: None = Depends(require_auth)):
-    data = await f.read()
-    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(413, f"file oltre {MAX_UPLOAD_MB} MB")
+    # Streaming con cap: niente buffering illimitato prima del check 25MB.
+    limit = MAX_UPLOAD_MB * 1024 * 1024
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await f.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(413, f"file oltre {MAX_UPLOAD_MB} MB")
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    if len(data) == 0:
+        raise HTTPException(415, "file vuoto")
     head = data[:16]
     if head.startswith(b"\xff\xd8\xff"):
         ext = ".jpg"
     elif head.startswith(b"\x89PNG"):
         ext = ".png"
-    elif head.startswith(b"RIFF") and data[8:12] == b"WEBP":
+    elif head.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
         ext = ".webp"
     else:
         raise HTTPException(415, "solo JPEG/PNG/WebP")
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     aid = db.new_id("upl")
-    p = UPLOADS_DIR / (aid + ext)
-    p.write_bytes(data)
+    p = (UPLOADS_DIR / (safe_name(aid) + ext))
+    # Scrittura atomica via .part: niente file troncati visibili.
+    tmp = p.with_suffix(p.suffix + ".part")
+    tmp.write_bytes(data)
+    tmp.replace(p)
     return {"asset_upload_id": aid, "path": str(p.name), "bytes": len(data)}
 
 
@@ -402,7 +471,11 @@ async def list_assets(kind: str | None = None, favorite: bool = False,
                       _: None = Depends(require_auth)):
     cx = db.connect()
     try:
-        if favorite:
+        if favorite and kind:
+            rows = cx.execute(
+                "SELECT a.* FROM assets a JOIN favorites f ON f.asset_id=a.id "
+                "WHERE a.kind=? ORDER BY a.created_at DESC", (kind,)).fetchall()
+        elif favorite:
             rows = cx.execute(
                 "SELECT a.* FROM assets a JOIN favorites f ON f.asset_id=a.id ORDER BY a.created_at DESC").fetchall()
         elif kind:
@@ -458,6 +531,9 @@ async def thumb_asset(aid: str, _: None = Depends(require_auth)):
 async def fav_asset(aid: str, on: bool = True, _: None = Depends(require_auth)):
     cx = db.connect()
     try:
+        ex = cx.execute("SELECT 1 FROM assets WHERE id=?", (aid,)).fetchone()
+        if not ex:
+            raise HTTPException(404, "asset not found")
         if on:
             cx.execute("INSERT OR IGNORE INTO favorites(asset_id) VALUES(?)", (aid,))
         else:
@@ -487,9 +563,10 @@ async def create_project(body: ProjectIn, _: None = Depends(require_auth)):
     cx = db.connect()
     try:
         pid = db.new_id("prj")
-        cx.execute("INSERT INTO projects(id,name,created_at) VALUES(?,?,?)", (pid, body.name, db.now()))
+        ts = db.now()
+        cx.execute("INSERT INTO projects(id,name,created_at) VALUES(?,?,?)", (pid, body.name, ts))
         cx.commit()
-        return ProjectOut(id=pid, name=body.name, created_at=db.iso(db.now()), asset_ids=[])
+        return ProjectOut(id=pid, name=body.name, created_at=db.iso(ts), asset_ids=[])
     finally:
         cx.close()
 
@@ -498,6 +575,10 @@ async def create_project(body: ProjectIn, _: None = Depends(require_auth)):
 async def add_to_project(pid: str, aid: str, _: None = Depends(require_auth)):
     cx = db.connect()
     try:
+        if not cx.execute("SELECT 1 FROM projects WHERE id=?", (pid,)).fetchone():
+            raise HTTPException(404, "project not found")
+        if not cx.execute("SELECT 1 FROM assets WHERE id=?", (aid,)).fetchone():
+            raise HTTPException(404, "asset not found")
         cx.execute("INSERT OR IGNORE INTO project_assets(project_id,asset_id) VALUES(?,?)", (pid, aid))
         cx.commit()
         return {"ok": True}

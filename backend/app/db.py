@@ -8,7 +8,6 @@ from pathlib import Path
 from .config import DB_PATH
 
 SCHEMA = """
-PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS jobs(
   id TEXT PRIMARY KEY,
   task_type TEXT NOT NULL,
@@ -47,13 +46,29 @@ CREATE TABLE IF NOT EXISTS project_assets(
 CREATE TABLE IF NOT EXISTS favorites(
   asset_id TEXT PRIMARY KEY
 );
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_assets_created ON assets(created_at);
 """
+
+_init_done_for: set[str] = set()
 
 def connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    cx = sqlite3.connect(str(DB_PATH))
+    cx = sqlite3.connect(str(DB_PATH), timeout=30.0, check_same_thread=False)
     cx.row_factory = sqlite3.Row
-    cx.executescript(SCHEMA)
+    key = str(DB_PATH)
+    if key not in _init_done_for:
+        cx.execute("PRAGMA journal_mode=WAL;")
+        cx.execute("PRAGMA busy_timeout=30000;")
+        cx.executescript(SCHEMA)
+        cx.commit()
+        _init_done_for.add(key)
+    else:
+        # Light per-connection pragmas only (no full schema rewrite).
+        try:
+            cx.execute("PRAGMA busy_timeout=30000;")
+        except Exception:
+            pass
     return cx
 
 def now() -> float:

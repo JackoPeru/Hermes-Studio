@@ -19,12 +19,16 @@ def client(tmp_path, monkeypatch):
     cfg.DB_PATH = data / "studio.db"
     import importlib
     import app.db as dbmod, app.auth as authmod
+    # reset init cache + token cache per test isolation
+    dbmod._init_done_for.clear()
+    authmod._cached_token = None
     importlib.reload(dbmod); importlib.reload(authmod)
     import app.main as mainmod
     importlib.reload(mainmod)
     tok = "test-token"
     (data / "bearer.token").parent.mkdir(parents=True, exist_ok=True)
     (data / "bearer.token").write_text(tok)
+    authmod._cached_token = None
     c = TestClient(mainmod.app)
     c.headers.update({"Authorization": f"Bearer {tok}"})
     return c
@@ -73,3 +77,40 @@ def test_workflow_builder_shapes():
     assert p["5"]["inputs"]["width"] == 770  # builder keeps caller value; API layer snaps to 32
     assert p["8"]["inputs"]["filename_prefix"] == "journey/job_abc"
     assert p["6"]["inputs"]["seed"] == 7
+
+def test_workflow_prompt_with_placeholders_not_corrupted():
+    from app.workflows import build_qwen_t2i
+    tricky = "a poster saying {{WIDTH}} x {{HEIGHT}} and {{PROMPT}}"
+    p = build_qwen_t2i(prompt=tricky, negative="n", width=1024, height=1024, seed=1, steps=5, job_id="j1")
+    assert p["4"]["inputs"]["prompt"] == tricky
+    assert p["5"]["inputs"]["width"] == 1024
+
+def test_cancel_queued_goes_cancelled(client):
+    r = client.post("/api/v1/jobs", json={"taskType": "image", "prompt": "cancel me"})
+    jid = r.json()["id"]
+    rc = client.post(f"/api/v1/jobs/{jid}/cancel")
+    assert rc.status_code == 200
+    assert rc.json()["status"] == "cancelled"
+
+def test_favorite_missing_404_and_project_validation(client):
+    assert client.post("/api/v1/assets/nope/favorite?on=true").status_code == 404
+    r = client.post("/api/v1/projects", json={"name": "p1"})
+    assert r.status_code == 201
+    pid = r.json()["id"]
+    assert client.post(f"/api/v1/projects/{pid}/assets/nope").status_code == 404
+    assert client.post(f"/api/v1/projects/nope/assets/nope").status_code == 404
+    # kind+favorite combo does not 500
+    assert client.get("/api/v1/assets", params={"kind": "image", "favorite": True}).status_code == 200
+
+def test_upload_rejects_oversize_fast(client, monkeypatch):
+    import app.main as m
+    monkeypatch.setattr(m, "MAX_UPLOAD_MB", 0)
+    big = b"\xff\xd8\xff" + b"0" * 10
+    r = client.post("/api/v1/assets/upload", files={"f": ("a.jpg", big, "image/jpeg")})
+    assert r.status_code == 413
+
+def test_status_shape(client):
+    r = client.get("/api/v1/status")
+    assert r.status_code == 200
+    j = r.json()
+    assert "queue_length" in j and "storage" in j

@@ -4,12 +4,15 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import coil.ImageLoader
+import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.ResponseBody
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
@@ -17,24 +20,40 @@ import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
+import java.util.concurrent.TimeUnit
 
 private val Context.store by preferencesDataStore("hermes_studio")
 private val KEY_BASE = stringPreferencesKey("base_url")
 private val KEY_TOKEN = stringPreferencesKey("bearer")
 
+@JsonClass(generateAdapter = true)
+data class StatusOut(val backend: String = "", val queue_length: Int = 0)
+
 interface StudioApi {
     @GET("api/v1/health") suspend fun health(): Health
     @GET("api/v1/capabilities") suspend fun capabilities(): Capabilities
-    @GET("api/v1/status") suspend fun status(): Map<String, Any?>
+    @GET("api/v1/status") suspend fun status(): StatusOut
     @GET("api/v1/jobs") suspend fun jobs(@Query("limit") limit: Int = 50): List<Job>
     @GET("api/v1/jobs/{id}") suspend fun job(@Path("id") id: String): Job
     @POST("api/v1/jobs") suspend fun createJob(@Body b: JobCreate): Job
     @POST("api/v1/jobs/{id}/cancel") suspend fun cancel(@Path("id") id: String): Job
-    @GET("api/v1/assets") suspend fun assets(@Query("kind") kind: String? = null): List<Asset>
+    @GET("api/v1/assets")
+    suspend fun assets(
+        @Query("kind") kind: String? = null,
+        @Query("favorite") favorite: Boolean? = null
+    ): List<Asset>
+    @POST("api/v1/assets/{id}/favorite")
+    suspend fun favorite(@Path("id") id: String, @Query("on") on: Boolean = true): ResponseBody
 }
 
 class StudioRepo(private val ctx: Context) {
-    private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
+    private val moshi: Moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
+
+    private var cachedBase = ""
+    private var cachedApi: StudioApi? = null
+    private var cachedToken = "__unset__"
+    private var cachedLoader: ImageLoader? = null
+    private var loaderToken = "__unset__"
 
     suspend fun baseUrl(): String =
         ctx.store.data.map { it[KEY_BASE] ?: "http://100.94.223.14:8650/" }.first().let {
@@ -45,22 +64,55 @@ class StudioRepo(private val ctx: Context) {
 
     suspend fun save(base: String, token: String) {
         ctx.store.edit { it[KEY_BASE] = base.trim(); it[KEY_TOKEN] = token.trim() }
+        cachedApi = null; cachedLoader = null
     }
+
+    private fun buildClient(tok: String): OkHttpClient =
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .addInterceptor(Interceptor { c ->
+                val r = c.request().newBuilder()
+                if (tok.isNotBlank()) r.addHeader("Authorization", "Bearer $tok")
+                c.proceed(r.build())
+            }).build()
 
     suspend fun api(): StudioApi {
+        val base = baseUrl()
         val tok = token()
-        val cli = OkHttpClient.Builder().addInterceptor(Interceptor { c ->
-            val r = c.request().newBuilder()
-            if (tok.isNotBlank()) r.addHeader("Authorization", "Bearer $tok")
-            c.proceed(r.build())
-        }).build()
-        return Retrofit.Builder().baseUrl(baseUrl()).client(cli)
+        if (cachedApi != null && base == cachedBase && tok == cachedToken) return cachedApi!!
+        val cli = buildClient(tok)
+        val api = Retrofit.Builder().baseUrl(base).client(cli)
             .addConverterFactory(MoshiConverterFactory.create(moshi)).build()
             .create(StudioApi::class.java)
+        cachedBase = base; cachedToken = tok; cachedApi = api
+        return api
     }
 
-    fun assetUrl(a: Asset, thumb: Boolean): String {
-        // base + relative path; done lazily by callers with runBlocking-free state
-        return (if (thumb) a.thumb else a.path) ?: a.path
+    suspend fun absoluteUrl(relativeOrAbsolute: String?): String? {
+        if (relativeOrAbsolute.isNullOrBlank()) return null
+        if (relativeOrAbsolute.startsWith("http")) return relativeOrAbsolute
+        val base = baseUrl().trimEnd('/')
+        val rel = if (relativeOrAbsolute.startsWith("/")) relativeOrAbsolute else "/$relativeOrAbsolute"
+        return base + rel
+    }
+
+    suspend fun assetUrl(a: Asset, thumb: Boolean): String? {
+        val rel = if (thumb) a.thumb ?: a.path else a.path
+        return absoluteUrl(rel)
+    }
+
+    suspend fun imageLoader(): ImageLoader {
+        val tok = token()
+        if (cachedLoader != null && tok == loaderToken) return cachedLoader!!
+        val loader = ImageLoader.Builder(ctx).okHttpClient(buildClient(tok)).crossfade(true).build()
+        cachedLoader = loader; loaderToken = tok
+        return loader
+    }
+
+    suspend fun testConnection(): String {
+        api().capabilities()
+        return baseUrl()
     }
 }

@@ -47,19 +47,13 @@ def apply_style(prompt: str, preset: str | None) -> str:
 def build_qwen_t2i(*, prompt: str, negative: str, width: int, height: int,
                    seed: int, steps: int, job_id: str) -> dict:
     tpl = copy.deepcopy(QWEN_T2I_V1)
-    raw = str(tpl).replace("{{PROMPT}}", "\x00P\x00")
-    # simple + safe: walk and replace exact placeholder strings
-    import json
-    s = json.dumps(tpl)
-    s = (s.replace("{{PROMPT}}", json.dumps(prompt)[1:-1])
-          .replace("{{NEGATIVE_PROMPT}}", json.dumps(negative or DEFAULT_NEGATIVE)[1:-1])
-          .replace("{{WIDTH}}", str(width)).replace("{{HEIGHT}}", str(height))
-          .replace("{{SEED}}", str(seed)).replace("{{STEPS}}", str(steps))
-          .replace("{{JOB_ID}}", job_id))
-    data = json.loads(s)
-    # coerce numeric fields back to numbers
-    data["5"]["inputs"]["width"] = int(width)
-    data["5"]["inputs"]["height"] = int(height)
-    data["6"]["inputs"]["seed"] = int(seed)
-    data["6"]["inputs"]["steps"] = int(steps)
-    return data
+    # Sostituzione esatta per nodo: niente str.replace sul JSON (il prompt utente
+    # potrebbe contenere {{WIDTH}} e verrebbe corrotto). Solo i campi template.
+    tpl["4"]["inputs"]["prompt"] = prompt
+    tpl["4"]["inputs"]["negative_prompt"] = negative or DEFAULT_NEGATIVE
+    tpl["5"]["inputs"]["width"] = int(width)
+    tpl["5"]["inputs"]["height"] = int(height)
+    tpl["6"]["inputs"]["seed"] = int(seed)
+    tpl["6"]["inputs"]["steps"] = int(steps)
+    tpl["8"]["inputs"]["filename_prefix"] = f"journey/{job_id}"
+    return tpl

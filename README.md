@@ -3,10 +3,17 @@
 App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per generare immagini con Qwen-Image 2.1 via ComfyUI sul server `hermes`. Video **disabilitato per license-gate MiniMax H3** (documentato, UI + API 409).
 
 ## Struttura
-- `backend/` FastAPI `/api/v1/*` (jobs persistenti SQLite WAL, ComfyUIAdapter, coda serializzata, SSE, assets+thumbs, progetti/preferiti).
-- `android/` app nativa: Home, Crea (immagine), Crea video (gate), Libreria, Impostazioni. Nessuna WebView.
-- `docs/DISCOVERY.md` ricognizione reale, `docs/API.md` contratto, `docs/PAIRING.md` pairing Tailscale.
-- `tests/test_backend.py` 7 test verdi.
+- `backend/` FastAPI `/api/v1/*` (jobs persistenti SQLite WAL, ComfyUIAdapter, coda seriale, SSE, assets+thumbs, progetti/preferiti).
+- `android/` app nativa: Home, Crea (immagine), Crea video (gate), Libreria, Impostazioni (pairing + **auto-update in-app**). Nessuna WebView.
+- `docs/DISCOVERY.md` ricognizione reale, `docs/API.md` contratto, `docs/PAIRING.md` pairing Tailscale, `docs/RUNBOOK.md` operativo, `docs/UPDATE.md` auto-update.
+- `tests/test_backend.py` 12 test verdi. `.env.example` per tutte le env.
+
+## Prerequisiti
+- Server: Python 3.12, ComfyUI `:8188`, gpu-manager `:8643`, systemd.
+- App: JDK Temurin 17, Android SDK 35, Tailscale sullo stesso tailnet.
+
+## Env backend (vedi `.env.example`)
+`HERMES_STUDIO_DATA/HOST/PORT/COMFY_URL/MANAGER_URL/MANAGER_KEY/MAX_UPLOAD_MB/BEARER`.
 
 ## Avvio backend (sul server, DOPO ok esplicito — non eseguire senza autorizzazione)
 ```bash
@@ -18,10 +25,18 @@ HERMES_STUDIO_DATA=/var/lib/hermes-studio HERMES_STUDIO_HOST=127.0.0.1 HERMES_ST
 # Tailscale Serve davanti per HTTPS privato (vedi docs/PAIRING.md).
 ```
 
+## Test / lint
+```bash
+pip install -r backend/requirements-dev.txt
+pytest -q
+ruff check backend tests
+```
+
 ## App
-Apri `android/` in Android Studio, imposta backend+token in Impostazioni, build `assembleDebug`. La coda sopravvive a chiusura app (stato dal server).
+Apri `android/` in Android Studio (se manca il wrapper: `gradle wrapper`), imposta backend+token in Impostazioni, build `assembleDebug`. La coda sopravvive a chiusura app (stato dal server). Release firmata + auto-update da GitHub: vedi `docs/UPDATE.md` + workflow `Build And Publish Release APK`.
 
 ## Limiti V1 onesti
 - Solo `text-to-image` Qwen (edit/reference disabilitato finché non validato).
 - Niente ETA inventate: stato + step; progresso reale solo quando Comfy lo riporta.
 - Concorrenza 1 job (VRAM reale); coordinamento via GPU-manager, mai kill/reset.
+- Auto-update fail-closed finché la chiave pubblica non è configurata (`docs/UPDATE.md`).
