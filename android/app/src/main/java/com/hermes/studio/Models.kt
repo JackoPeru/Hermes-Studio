@@ -75,5 +75,6 @@ data class Asset(
     val job_id: String? = null,
     val width: Int? = null,
     val height: Int? = null,
+    val duration: Double? = null,
     val created_at: String = ""
 )

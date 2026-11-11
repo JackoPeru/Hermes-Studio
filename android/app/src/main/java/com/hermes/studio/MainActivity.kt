@@ -91,7 +91,7 @@ class MainActivity : ComponentActivity() {
                         ) { backStack ->
                             CreateImageScreen(repo, initialPrompt = backStack.arguments?.getString("prompt"))
                         }
-                        composable("video") { CreateVideoScreen() }
+                        composable("video") { CreateVideoScreen(repo, onOpenAsset = { nav.navigate(it) }) }
                         composable("library") {
                             LibraryScreen(repo, onAsset = { nav.navigate(it) }, onReuse = { nav.navigate(it) })
                         }

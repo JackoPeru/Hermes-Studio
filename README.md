@@ -1,6 +1,6 @@
 # Hermes Studio — V2 (vertical slice completa)
 
-App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per generare immagini con Qwen-Image 2.1 via ComfyUI sul server `hermes`. Video **disabilitato per license-gate MiniMax H3** (documentato, UI + API 409).
+App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per generare immagini (Qwen-Image 2.1) e video (MiniMax H3 turbo, image-to-video) via ComfyUI sul server `hermes`.
 
 ## Struttura
 - `backend/` FastAPI `/api/v1/*` (jobs persistenti SQLite WAL, ComfyUIAdapter, coda seriale, SSE, assets+thumbs, progetti/preferiti).
@@ -40,8 +40,9 @@ ruff check backend tests
 ## App
 Apri `android/` in Android Studio (se manca il wrapper: `gradle wrapper`), imposta backend+token in Impostazioni, build `assembleDebug`. La coda sopravvive a chiusura app (stato dal server). Build con firma stabile + auto-update in-app: vedi `docs/UPDATE.md` + workflow `Build And Publish Release APK` (feed `updates/latest.json` nella stessa repo).
 
-## Limiti V1 onesti
-- Solo `text-to-image` Qwen (edit/reference disabilitato finché non validato).
-- Niente ETA inventate: stato + step; progresso reale solo quando Comfy lo riporta.
+## Limiti V2 onesti
+- Video = solo image-to-video H3 turbo (~5s, 1344×768 / 768×1344), start frame obbligatorio dalla libreria. Text-to-video: nessun preset nel manager (solo template grezzo mai validato) → non offerto.
+- Edit/reference Qwen: pipeline non validata end-to-end → UI disabilitata.
+- Niente ETA inventate: stato + step; progresso reale solo quando Comfy/manager lo riportano.
 - Concorrenza 1 job (VRAM reale); coordinamento via GPU-manager, mai kill/reset.
 - Auto-update fail-closed finché la chiave pubblica non è configurata (`docs/UPDATE.md`).

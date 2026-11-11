@@ -53,8 +53,10 @@ def test_capabilities_gates_video(client):
     assert r.status_code == 200
     j = r.json()
     assert any(t["enabled"] for t in j["image"])
-    assert all(not t["enabled"] for t in j["video"])
-    assert "LICENSE_GATE" in json.dumps(j)
+    i2v = [t for t in j["video"] if t["task"] == "image-to-video"]
+    assert i2v and i2v[0]["enabled"] is True
+    t2v = [t for t in j["video"] if t["task"] == "text-to-video"]
+    assert t2v and t2v[0]["enabled"] is False  # nessun preset T2V nel manager
 
 def test_enqueue_image_and_idempotency(client):
     body = {"taskType": "image", "prompt": "a neon alley", "width": 768, "height": 768, "idempotency_key": "k1"}
@@ -64,8 +66,30 @@ def test_enqueue_image_and_idempotency(client):
     assert r2.json()["id"] == r1.json()["id"]
 
 def test_video_rejected_409(client):
+    # Video senza immagine di partenza: 422 onesto, non 409 (gate rimosso).
     r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "x"})
-    assert r.status_code == 409
+    assert r.status_code == 422
+
+def test_video_enqueue_uses_manager_preset(client, monkeypatch):
+    import app.main as m
+    submitted = {}
+    class FakeMgr:
+        async def submit_video(self, preset, params):
+            submitted.update(preset=preset, params=params)
+            return {"job_id": "m1", "status": "queued", "preset": preset}
+        async def get_job(self, mid):
+            raise AssertionError("poll non atteso in enqueue")
+        async def cancel_job(self, mid):
+            return {"job_id": mid, "status": "cancelled"}
+    monkeypatch.setattr(m, "_manager", lambda: FakeMgr())
+    aid = _seed_asset(client)
+    r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "onde lente",
+                                          "asset_ids": [aid], "width": 1344, "height": 768})
+    assert r.status_code == 201, r.text
+    j = r.json()
+    assert j["taskType"] == "video" and j["status"] == "queued"
+    assert submitted["preset"] == "journey_video_preview"
+    assert submitted["params"]["input_images"] and submitted["params"]["input_images"][0].endswith(".png")
 
 def test_upload_limits_and_sniffing(client):
     big = b"\xff\xd8\xff" + b"0" * 10
@@ -150,3 +174,59 @@ def test_get_and_delete_asset(client):
     assert client.get(f"/api/v1/assets/{aid}").status_code == 404
     assert client.get(f"/api/v1/assets/{aid}/download").status_code == 404
     assert client.delete(f"/api/v1/assets/{aid}").status_code == 404
+
+@pytest.mark.asyncio
+async def test_video_worker_done_path(client, tmp_path, monkeypatch):
+    import asyncio as _aio
+    import shutil
+    import subprocess as _sp
+    import app.db as dbmod
+    import app.main as m
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe assenti")
+    mp4 = tmp_path / "clip.mp4"
+    r = _sp.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=10",
+         "-pix_fmt", "yuv420p", str(mp4)], capture_output=True, timeout=60)
+    assert mp4.is_file(), "ffmpeg non ha generato il clip"
+    aid = _seed_asset(client)
+    jid = dbmod.new_id("job")
+    cx = dbmod.connect()
+    try:
+        cx.execute(
+            "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (jid, "video", "queued", "comfyui", "minimax-h3-turbo-4step", "onde",
+             json.dumps({"width": 1344, "height": 768, "steps": 4, "seed": 1,
+                         "asset_ids": [aid], "video_preset": "journey_video_preview"}),
+             dbmod.now(), dbmod.now()))
+        cx.commit()
+    finally:
+        cx.close()
+    class FakeMgr:
+        async def submit_video(self, preset, params):
+            return {"job_id": "mid9", "status": "queued", "preset": preset}
+        async def get_job(self, mid):
+            assert mid == "mid9"
+            return {"job_id": mid, "status": "done", "progress": 1.0,
+                    "result_paths": [str(mp4)], "error": ""}
+        async def cancel_job(self, mid):
+            return {"job_id": mid, "status": "cancelled"}
+    monkeypatch.setattr(m, "_manager", lambda: FakeMgr())
+    async def no_sleep(*a, **k):
+        return None
+    monkeypatch.setattr(_aio, "sleep", no_sleep)
+    await m._run_one_video(jid)
+    cx = dbmod.connect()
+    try:
+        row = cx.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+        assert row["status"] == "completed", row["error"]
+        outs = json.loads(row["outputs"])
+        assert len(outs) == 1
+        a = cx.execute("SELECT * FROM assets WHERE id=?", (outs[0],)).fetchone()
+        assert a["kind"] == "video"
+        assert a["duration"] and a["duration"] > 0
+    finally:
+        cx.close()
+    import app.config as cfg
+    assert (cfg.THUMBS_DIR / (outs[0] + ".jpg")).is_file()

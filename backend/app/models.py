@@ -78,6 +78,7 @@ class AssetOut(BaseModel):
     job_id: str | None = None
     width: int | None = None
     height: int | None = None
+    duration: float | None = None
     created_at: str
 
 class ProjectIn(BaseModel):

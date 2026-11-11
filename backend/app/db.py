@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS assets(
   job_id TEXT,
   width INTEGER,
   height INTEGER,
+  duration REAL,
   created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS projects(
@@ -50,6 +51,12 @@ CREATE INDEX IF NOT EXISTS idx_assets_created ON assets(created_at);
 
 _init_done_for: set[str] = set()
 
+def _migrate(cx: sqlite3.Connection) -> None:
+    cols = {r[1] for r in cx.execute("PRAGMA table_info(assets)").fetchall()}
+    if "duration" not in cols:
+        cx.execute("ALTER TABLE assets ADD COLUMN duration REAL")
+
+
 def connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     cx = sqlite3.connect(str(DB_PATH), timeout=30.0, check_same_thread=False)
@@ -59,6 +66,7 @@ def connect() -> sqlite3.Connection:
         cx.execute("PRAGMA journal_mode=WAL;")
         cx.execute("PRAGMA busy_timeout=30000;")
         cx.executescript(SCHEMA)
+        _migrate(cx)
         cx.commit()
         _init_done_for.add(key)
     else:

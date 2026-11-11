@@ -20,6 +20,6 @@ Token in `$DATA/bearer.token` (0600). Vedi `.env.example` per tutte le env.
 
 ## Troubleshooting
 - 401: re-incolla token da `bearer.token` (o `HERMES_STUDIO_BEARER`). `GET /health` è no-auth: usare `GET /capabilities` per test reale.
-- 409 video: atteso (LICENSE_GATE H3). Vedi `docs/DISCOVERY.md`.
+- Video (image-to-video H3 turbo): il worker interroga il manager ogni 10s (timeout 90min). Se il manager è in coda dietro altri job, il job resta `running`: è normale.
 - `database is locked`: aggiornare a questa V1 (timeout + connessioni brevi). Backup: copiare `studio.db` a backend fermo.
 - Immagini 404 in app: verificare baseUrl + token (download/thumb richiedono auth).
