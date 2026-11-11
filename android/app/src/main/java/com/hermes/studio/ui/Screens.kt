@@ -1302,10 +1302,12 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
                         }
                         Text(j.prompt, fontSize = 14.sp)
                         Text(
-                            "${j.engine} · ${j.model}" +
-                                ((j.width != null && j.height != null) ? " · ${j.width}×${j.height}" : "") +
-                                (j.steps?.let { " · $it step" } ?: "") +
-                                (j.seed?.let { " · seed $it" } ?: ""),
+                            buildString {
+                                append("${j.engine} · ${j.model}")
+                                if (j.width != null && j.height != null) append(" · ${j.width}×${j.height}")
+                                j.steps?.let { append(" · $it step") }
+                                j.seed?.let { append(" · seed $it") }
+                            },
                             color = Muted, fontSize = 13.sp
                         )
                         LinearProgressIndicator(

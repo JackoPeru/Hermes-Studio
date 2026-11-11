@@ -69,8 +69,6 @@ interface StudioApi {
     @DELETE("api/v1/assets/{id}") suspend fun deleteAsset(@Path("id") id: String): ResponseBody
     @GET("api/v1/projects") suspend fun projects(): List<Project>
     @POST("api/v1/projects") suspend fun createProject(@Body b: ProjectCreate): Project
-    @POST("api/v1/projects/{pid}/assets/{aid}")
-    suspend fun addToProject(@Path("pid") pid: String, @Path("aid") aid: String): ResponseBody
 }
 
 class StudioRepo(private val ctx: Context) {
@@ -162,7 +160,9 @@ class StudioRepo(private val ctx: Context) {
         val out = java.io.File(dir, a.id + if (a.kind == "video") ".mp4" else ".jpg")
         authedClient().newCall(Request.Builder().url(url).build()).execute().use { r ->
             if (!r.isSuccessful) throw IllegalStateException("Download fallito (${r.code})")
-            r.body.byteStream().use { input -> out.outputStream().use { input.copyTo(it) } }
+            (r.body ?: throw IllegalStateException("Risposta vuota")).byteStream().use { input ->
+                out.outputStream().use { input.copyTo(it) }
+            }
         }
         out
     }
