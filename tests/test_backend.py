@@ -1,4 +1,5 @@
-import io, json, sys
+import json
+import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
@@ -18,11 +19,13 @@ def client(tmp_path, monkeypatch):
     cfg.UPLOADS_DIR = data / "uploads"
     cfg.DB_PATH = data / "studio.db"
     import importlib
-    import app.db as dbmod, app.auth as authmod
+    import app.db as dbmod
+    import app.auth as authmod
     # reset init cache + token cache per test isolation
     dbmod._init_done_for.clear()
     authmod._cached_token = None
-    importlib.reload(dbmod); importlib.reload(authmod)
+    importlib.reload(dbmod)
+    importlib.reload(authmod)
     import app.main as mainmod
     importlib.reload(mainmod)
     tok = "test-token"
@@ -98,7 +101,7 @@ def test_favorite_missing_404_and_project_validation(client):
     assert r.status_code == 201
     pid = r.json()["id"]
     assert client.post(f"/api/v1/projects/{pid}/assets/nope").status_code == 404
-    assert client.post(f"/api/v1/projects/nope/assets/nope").status_code == 404
+    assert client.post("/api/v1/projects/nope/assets/nope").status_code == 404
     # kind+favorite combo does not 500
     assert client.get("/api/v1/assets", params={"kind": "image", "favorite": True}).status_code == 200
 

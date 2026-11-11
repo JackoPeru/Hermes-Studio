@@ -1,10 +1,8 @@
 """SQLite WAL store with minimal migrations. Jobs survive app close + backend restart."""
 from __future__ import annotations
-import json
 import sqlite3
 import time
 import uuid
-from pathlib import Path
 from .config import DB_PATH
 
 SCHEMA = """

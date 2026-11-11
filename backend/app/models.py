@@ -1,7 +1,7 @@
 """Pydantic contracts — stable, engine-independent. v1."""
 from __future__ import annotations
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 from pydantic import BaseModel, Field
 
 class TaskType(str, Enum):
