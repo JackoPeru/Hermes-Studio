@@ -310,11 +310,24 @@ async def _run_one_video(job_id: str) -> None:
                            ("immagine di partenza non trovata in libreria", db.now(), job_id))
                 cx.commit()
                 return
+            # Il manager accetta input solo da root fidate (hub uploads, runtimes,
+            # outputs, /tmp): staging copia in /tmp, submit, pulizia subito dopo.
+            from pathlib import Path as _P
+            import shutil as _sh2
+            import tempfile as _tf
+            stage = _P(_tf.gettempdir()) / f"hs_{job_id}_in{_P(src_path).suffix.lower() or '.png'}"
+            try:
+                await asyncio.to_thread(_sh2.copy2, src_path, stage)
+            except Exception as e:
+                cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                           (f"staging input fallito: {e}", db.now(), job_id))
+                cx.commit()
+                return
             preset = params.get("video_preset") or "journey_video_preview"
             try:
                 res = await mgr.submit_video(preset, {
                     "prompt": prompt_text,
-                    "input_images": [src_path],
+                    "input_images": [str(stage)],
                     "width": int(params.get("width") or 1344),
                     "height": int(params.get("height") or 768),
                     "seed": int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
@@ -327,6 +340,11 @@ async def _run_one_video(job_id: str) -> None:
                            (f"manager submit failed: {e}", db.now(), job_id))
                 cx.commit()
                 return
+            finally:
+                try:
+                    stage.unlink()
+                except OSError:
+                    pass
             cx.execute(
                 "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
                 (mid, db.now(), job_id),

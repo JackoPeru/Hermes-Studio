@@ -34,6 +34,9 @@ Tutto sotto è rilevato via SSH read-only su `hermes`, non ipotizzato.
   durata finché combinazioni diverse non saranno validate con render reali.
 - Camera motion (Dolly/Pan/Loop): solo suggerimenti testuali appesi al prompt —
   il preset non ha parametri camera strutturali.
+- Lo start frame deve stare in una root fidata del manager (`~/.hermes`,
+  `/opt/hermes`, `/tmp`): lo Studio lo copia in `/tmp/hs_{job}_in.*`, sottomette,
+  e cancella subito dopo il 202. Percorsi fuori root = 400 onesto dal manager.
 - La coda Studio resta seriale: un video lungo blocca le immagini (VRAM reale).
 - ComfyUI parte via manager quando serve (stato `media_online`); job in coda
   durante LLM residente è comportamento normale, non errore.
