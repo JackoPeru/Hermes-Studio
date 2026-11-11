@@ -1,0 +1,11 @@
+{
+  "versionCode": 13,
+  "versionName": "0.1.1-gh13",
+  "tagName": "studio-13",
+  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-13/HermesStudio-13.apk",
+  "assetSize": 18830797,
+  "sha256": "7a6e44a7ec75425d839b5d7509ceb14dcb5d66c94cc25031198eaf9610e9d906",
+  "signature": "",
+  "publishedAt": "2026-11-11T17:46:25Z",
+  "notes": ["V1 + auto-update in-app"]
+}
