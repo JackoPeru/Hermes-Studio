@@ -181,9 +181,7 @@ def test_get_and_delete_asset(client):
     assert client.delete(f"/api/v1/assets/{aid}").status_code == 404
 
 def test_gpu_endpoint_shape(client, monkeypatch):
-    import app.main as m
     import subprocess as _sp
-    real_run = _sp.run
     def fake_run(*a, **k):
         class R:
             returncode = 0
@@ -198,7 +196,7 @@ def test_gpu_endpoint_shape(client, monkeypatch):
     assert len(g) == 2 and g[0]["temp_c"] == 42 and g[1]["mem_total_mb"] == 8000
 
 @pytest.mark.asyncio
-async def test_image_worker_done_path(client, tmp_path, monkeypatch):
+async def test_video_worker_done_path(client, tmp_path, monkeypatch):
     # Worker completo con manager finto: nessun render reale, nessun ffmpeg.
     # ffprobe/ffmpeg assenti -> probe {} e thumb None, senza eccezioni (fail-soft).
     import asyncio as _aio
