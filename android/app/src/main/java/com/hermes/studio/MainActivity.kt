@@ -19,6 +19,7 @@ import androidx.navigation.navArgument
 import com.hermes.studio.ui.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var repo: StudioRepo
@@ -36,7 +37,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     // Test autenticato reale: capabilities, non health (no-auth darebbe falso online).
                     try { repo.api().capabilities(); online = true } catch (_: Exception) { online = false }
-                    kotlinx.coroutines.launch(Dispatchers.IO) { runCatching { updater.checkForUpdates() } }
+                    launch(Dispatchers.IO) { runCatching { updater.checkForUpdates() } }
                     updater.ensureBackgroundChecksConfigured()
                 }
                 Scaffold(
