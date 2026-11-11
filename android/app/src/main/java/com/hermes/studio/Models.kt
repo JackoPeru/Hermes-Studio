@@ -20,6 +20,17 @@ data class CapTask(
 data class Capabilities(val image: List<CapTask> = emptyList(), val video: List<CapTask> = emptyList())
 
 @JsonClass(generateAdapter = true)
+data class Project(
+    val id: String = "",
+    val name: String = "",
+    val created_at: String = "",
+    val asset_ids: List<String> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class ProjectCreate(val name: String)
+
+@JsonClass(generateAdapter = true)
 data class JobCreate(
     val taskType: String,
     val prompt: String,

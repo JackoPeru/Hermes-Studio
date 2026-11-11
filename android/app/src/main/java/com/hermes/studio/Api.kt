@@ -27,7 +27,14 @@ private val KEY_BASE = stringPreferencesKey("base_url")
 private val KEY_TOKEN = stringPreferencesKey("bearer")
 
 @JsonClass(generateAdapter = true)
-data class StatusOut(val backend: String = "", val queue_length: Int = 0)
+data class StorageOut(val free_gb: Double = 0.0, val total_gb: Double = 0.0)
+
+@JsonClass(generateAdapter = true)
+data class StatusOut(
+    val backend: String = "",
+    val queue_length: Int = 0,
+    val storage: StorageOut? = null
+)
 
 interface StudioApi {
     @GET("api/v1/health") suspend fun health(): Health
@@ -44,6 +51,10 @@ interface StudioApi {
     ): List<Asset>
     @POST("api/v1/assets/{id}/favorite")
     suspend fun favorite(@Path("id") id: String, @Query("on") on: Boolean = true): ResponseBody
+    @GET("api/v1/projects") suspend fun projects(): List<Project>
+    @POST("api/v1/projects") suspend fun createProject(@Body b: ProjectCreate): Project
+    @POST("api/v1/projects/{pid}/assets/{aid}")
+    suspend fun addToProject(@Path("pid") pid: String, @Path("aid") aid: String): ResponseBody
 }
 
 class StudioRepo(private val ctx: Context) {
