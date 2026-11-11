@@ -21,11 +21,15 @@ def client(tmp_path, monkeypatch):
     import importlib
     import app.db as dbmod
     import app.auth as authmod
+    import app.storage as storagemod
     # reset init cache + token cache per test isolation
     dbmod._init_done_for.clear()
     authmod._cached_token = None
     importlib.reload(dbmod)
     importlib.reload(authmod)
+    # storage lega ASSETS_DIR/THUMBS_DIR all'import: ricaricare o i file
+    # finiscono nella dir del primo test (thumb fantasma).
+    importlib.reload(storagemod)
     import app.main as mainmod
     importlib.reload(mainmod)
     tok = "test-token"
