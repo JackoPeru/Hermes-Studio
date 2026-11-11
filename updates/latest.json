@@ -5,7 +5,7 @@
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-15/HermesStudio-15.apk",
   "assetSize": 18830793,
   "sha256": "aa5f508e5f4d91789e2657a8978c36967ac8debaacf3a9cec7a798cd9f474d05",
-  "signature": "",
+  "signature": "MEUCIQCywkewZxuBTmyOl3tqoomVge1Ob6l2Ujv6MkXCgoU8XwIgFndxmZqyj47/TB/3NWwpEPyXE31LH92Wv2YIvFi4q8o=",
   "publishedAt": "2026-11-11T18:08:10Z",
   "notes": ["V1 + auto-update in-app"]
 }
