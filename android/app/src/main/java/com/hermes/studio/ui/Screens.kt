@@ -624,9 +624,8 @@ fun DropDownField(label: String, value: String, options: List<String>, onSelect:
     }
 }
 
-// ---------- Crea video (mockup 03, pipeline in gate) ----------
+// ---------- Crea video (mockup 03, image-to-video H3 turbo) ----------
 
-@Composable
 @Composable
 fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (() -> Unit)? = null) {
     val scope = rememberCoroutineScope()

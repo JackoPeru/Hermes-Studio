@@ -179,13 +179,13 @@ def test_get_and_delete_asset(client):
 async def test_video_worker_done_path(client, tmp_path, monkeypatch):
     import asyncio as _aio
     import shutil
-    import subprocess as _sp
     import app.db as dbmod
     import app.main as m
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         pytest.skip("ffmpeg/ffprobe assenti")
     mp4 = tmp_path / "clip.mp4"
-    r = _sp.run(
+    import subprocess as _sp
+    _sp.run(
         ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=10",
          "-pix_fmt", "yuv420p", str(mp4)], capture_output=True, timeout=60)
     assert mp4.is_file(), "ffmpeg non ha generato il clip"
