@@ -107,6 +107,13 @@ def test_upload_limits_and_sniffing(client):
     r = client.post("/api/v1/assets/upload", files={"f": ("a.txt", b"hello world", "text/plain")})
     assert r.status_code == 415
 
+def test_norm_wh_area_cap():
+    import app.main as m
+    assert m._norm_wh(1344, 768) == (1344, 768)  # al cap, passa netto
+    assert m._norm_wh(768, 1344) == (768, 1344)
+    w, h = m._norm_wh(1024, 1024)  # 1048576 > 1032192 -> clamp onesto
+    assert w * h <= 1032192 and w % 32 == 0 and h % 32 == 0
+
 def test_workflow_builder_shapes():
     from app.workflows import build_qwen_t2i
     p = build_qwen_t2i(prompt="cat", negative="blur", width=770, height=900, seed=7, steps=20, job_id="job_abc")

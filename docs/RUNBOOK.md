@@ -8,6 +8,9 @@ Token in `$DATA/bearer.token` (0600). Vedi `.env.example` per tutte le env.
 - Image e video vanno al manager (`POST /jobs/image|video` con preset versionati):
   in AUTO il manager fa unload LLM → avvio ComfyUI → run → restore LLM da solo.
   Lo Studio non tocca mai i servizi GPU: niente kill, reset o cambi modo manuali.
+- Area max manager: 1032192 px (validate_workflow rifiuta oltre con 400).
+  Lo Studio normale la rispetta in `_norm_wh` (1:1→992×992, 16:9→1344×768, 9:16→768×1344);
+  l'app propone solo formati conformi.
 - Worker seriale: `queued→preparing→running→completed|failed`, `cancelling→cancelled`.
 - Restart: `preparing→queued`; `running` con id manager → riconciliazione via `GET /jobs/{mid}`.
 - Cancel: `queued→cancelled` subito; `running→cancelling`, il worker propaga `POST .../cancel` al manager.

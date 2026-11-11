@@ -446,7 +446,7 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
         StylePreset("realistico", "Realistico", Icons.Filled.CameraAlt),
         StylePreset("fantasy", "Fantasy", Icons.Filled.AutoAwesome)
     )
-    val dims = mapOf("1:1" to (1024 to 1024), "16:9" to (1344 to 768), "9:16" to (768 to 1344))
+    val dims = mapOf("1:1" to (1024 to 1008), "16:9" to (1344 to 768), "9:16" to (768 to 1344))
 
     suspend fun refreshRecent() {
         try {

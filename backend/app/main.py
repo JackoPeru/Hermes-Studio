@@ -589,12 +589,22 @@ def _norm_wh(w: int | None, h: int | None) -> tuple[int, int]:
     w = w or 1024
     h = h or 1024
     # snap to 32px (H3 latent rule as conservative default for all)
-    return max(64, w // 32 * 32), max(64, h // 32 * 32)
+    w, h = max(64, w // 32 * 32), max(64, h // 32 * 32)
+    # Area cap del manager (validate_workflow: oltre -> 400 onesto).
+    # Stesso tetto dei preset video turbo: 1344x768 / 768x1344 passano netti.
+    if w * h > _AREA_CAP_PX:
+        import math as _math
+        s = _math.sqrt(_AREA_CAP_PX / (w * h))
+        w, h = max(64, int(w * s) // 32 * 32), max(64, int(h * s) // 32 * 32)
+    return w, h
 
 
 # Preset video verificati sul server (turbo 4-step, ~5s @24fps).
 # 16:9 e 9:16 mappano ai preset manager journey_video_preview / chained.
 # Full-steps (quality/first_last/reference) restano DISABLED upstream (OOM).
+# Area cap del manager (validate_workflow rifiuta oltre con 400 onesto):
+# 1344x768 e 768x1344 passano netti, 1024x1024 no -> clamp in _norm_wh.
+_AREA_CAP_PX = 1032192
 VIDEO_PRESETS = {
     "wide": ("journey_video_preview", 1344, 768),
     "tall": ("journey_video_preview_chained", 768, 1344),
