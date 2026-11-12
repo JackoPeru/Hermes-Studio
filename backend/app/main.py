@@ -632,6 +632,14 @@ async def gpu(_: None = Depends(require_auth)):
     return out
 
 
+# Cap area: il manager rifiuta oltre con 400 onesto (validate_workflow).
+# Video: tetto stretto anti-OOM (i preset turbo stanno a 1344x768 max).
+# Immagini: tetto 2K per still con SaveImage (proprietario 2026-11-12),
+# video e workflow senza output restano al tetto stretto.
+_VIDEO_AREA_CAP_PX = 1032192
+_IMAGE_AREA_CAP_PX = 2560 * 1440
+
+
 def _norm_wh(w: int | None, h: int | None, max_area: int = _IMAGE_AREA_CAP_PX) -> tuple[int, int]:
     w = w or 1024
     h = h or 1024
@@ -645,12 +653,6 @@ def _norm_wh(w: int | None, h: int | None, max_area: int = _IMAGE_AREA_CAP_PX) -
     return w, h
 
 
-# Cap area: il manager rifiuta oltre con 400 onesto (validate_workflow).
-# Video: tetto stretto anti-OOM (i preset turbo stanno a 1344x768 max).
-# Immagini: tetto 2K per still con SaveImage (proprietario 2026-11-12),
-# video e workflow senza output restano al tetto stretto.
-_VIDEO_AREA_CAP_PX = 1032192
-_IMAGE_AREA_CAP_PX = 2560 * 1440
 VIDEO_PRESETS = {
     "wide": ("journey_video_preview", 1344, 768),
     "tall": ("journey_video_preview_chained", 768, 1344),
