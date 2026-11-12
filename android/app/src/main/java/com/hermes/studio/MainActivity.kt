@@ -19,7 +19,6 @@ import androidx.navigation.navArgument
 import com.hermes.studio.ui.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var repo: StudioRepo

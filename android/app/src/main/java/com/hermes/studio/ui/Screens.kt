@@ -1402,37 +1402,18 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
                 } ?: 1f
                 Box(
                     Modifier.fillMaxWidth().aspectRatio(ar).clip(CardShape)
-                        .background(Color(0xFF141428)).clickable { asset?.let { onViewer("viewer/${it.id}") } }
+                        .background(Color(0xFF141428)).clickable {
+                            // Solo immagini: i video si riproducono inline qui sotto.
+                            asset?.takeIf { it.kind != "video" }?.let { onViewer("viewer/${it.id}") }
+                        }
                 ) {
-                    if (req != null && loader != null && asset != null) {
+                    if (asset?.kind == "video" && asset != null) {
+                        VideoPlayerBox(repo, asset!!, Modifier.fillMaxSize(), onError = { msg = it })
+                    } else if (req != null && loader != null && asset != null) {
                         AsyncImage(
                             model = req, imageLoader = loader!!, contentDescription = asset!!.id,
                             modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                         )
-                    }
-                    if (asset?.kind == "video") {
-                        Surface(
-                            shape = CircleShape, color = Color.Black.copy(alpha = 0.55f),
-                            modifier = Modifier.align(Alignment.Center),
-                            onClick = {
-                                val a = asset ?: return@Surface
-                                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                    try {
-                                        val f = repo.downloadToCache(a)
-                                        val play = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                                            setDataAndType(
-                                                androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", f),
-                                                "video/*"
-                                            )
-                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                        }
-                                        ctx.startActivity(android.content.Intent.createChooser(play, "Riproduci video"))
-                                    } catch (e: Exception) { msg = "Riproduzione fallita: ${e.message}" }
-                                }
-                            }
-                        ) {
-                            Icon(Icons.Filled.PlayArrow, "Riproduci", tint = Color.White, modifier = Modifier.padding(16.dp).size(40.dp))
-                        }
                     }
                 }
             }
@@ -1710,6 +1691,64 @@ fun FullscreenViewerScreen(repo: StudioRepo, assetId: String, onClose: () -> Uni
             ) {
                 Text("Tocca per ripristinare", color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
             }
+        }
+    }
+}
+
+
+// ---------- Player video in-app (ExoPlayer, niente app esterne) ----------
+
+@Composable
+fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier, onError: (String) -> Unit = {}) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var player by remember { mutableStateOf<androidx.media3.exoplayer.ExoPlayer?>(null) }
+    DisposableEffect(asset.id) {
+        var p: androidx.media3.exoplayer.ExoPlayer? = null
+        val job = scope.launch {
+            try {
+                val url = repo.assetUrl(asset, false) ?: repo.assetUrl(asset, true)
+                    ?: throw IllegalStateException("URL video mancante")
+                val tok = repo.token()
+                val dsf = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                    .setConnectTimeoutMs(15000).setReadTimeoutMs(60000)
+                if (tok.isNotBlank()) dsf.setDefaultRequestProperties(mapOf("Authorization" to "Bearer $tok"))
+                val source = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(dsf)
+                    .createMediaSource(androidx.media3.common.MediaItem.fromUri(url))
+                p = androidx.media3.exoplayer.ExoPlayer.Builder(ctx).build().also {
+                    it.setMediaSource(source)
+                    it.prepare()
+                    it.playWhenReady = true
+                    player = it
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                onError("Riproduzione fallita: ${e.message}")
+            }
+        }
+        onDispose {
+            job.cancel()
+            try { p?.release() } catch (_: Exception) {}
+            if (player === p) player = null
+        }
+    }
+    val current = player
+    if (current != null) {
+        androidx.compose.ui.viewinterop.AndroidView(
+            factory = { c ->
+                androidx.media3.ui.PlayerView(c).apply {
+                    this.player = current
+                    useController = true
+                    setShowPreviousButton(false)
+                    setShowNextButton(false)
+                    setShowFullscreenButton(false)
+                }
+            },
+            modifier = modifier.background(Color.Black)
+        )
+    } else {
+        Box(modifier.background(Color(0xFF141428)), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = AccentV, modifier = Modifier.size(40.dp))
         }
     }
 }
