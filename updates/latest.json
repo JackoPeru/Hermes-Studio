@@ -1,11 +1,11 @@
 {
-  "versionCode": 25,
-  "versionName": "0.1.1-gh25",
-  "tagName": "studio-25",
-  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-25/HermesStudio-25.apk",
+  "versionCode": 26,
+  "versionName": "0.1.1-gh26",
+  "tagName": "studio-26",
+  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-26/HermesStudio-26.apk",
   "assetSize": 22437468,
-  "sha256": "d62e4dd66c19c2470bd290ea752fb7f658f79b5dfa65f65c1522a639b4217486",
-  "signature": "MEYCIQD4MwG64WffTV5SZhrXBa/OlKjssiMin2OnTSmfePlHxQIhALbL6Hjt0uZGNboTAIGbZSo5keTo7L+hdJpn9r/+9UR5",
-  "publishedAt": "2026-11-12T11:04:57Z",
-  "notes": ["V1 + auto-update in-app"]
+  "sha256": "82d1c8d6861f1d59e8991e70fd02435490b5fea823c1d97f2de4fabfde7d8a63",
+  "signature": "MEYCIQCWvnYWX9rySIuOD4EcDGhUPpXO974/t9H7BEfETFhM5AIhALCjVKzp4+GguYl0zxDO/Wriy6XUN7P5l/UBZqH1ZIoA",
+  "publishedAt": "2026-11-12T12:02:54Z",
+  "notes": ["V3: ritocco immagini, upload indicizzati, durate video, prune UI, release notes", "Fix: arg JobCreate + forward-ref picker", "Fix workflow note release (heredoc invece di one-liner)"]
 }
