@@ -5,7 +5,7 @@
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-28/HermesStudio-28.apk",
   "assetSize": 22470268,
   "sha256": "bb83fe36bdc8cd3b591e20c5cacfa3f62a39cc066ff67a3fd6cec4c34bd48fe7",
-  "signature": "",
+  "signature": "MEQCIHnCGFGlkxeDajsRD6KrSFQI5vyahS8I32Ke3qotsblFAiBfn37ayno7/nIeXOY1I0FLPn8FN/NHbZg30WhUf/RUGA==",
   "publishedAt": "2026-11-12T13:27:54Z",
   "notes": ["Audit-2 fix: terminali condizionali, nav/share Main, MIME reali, Job model, docs", "Fix: 480p onorato (preset solo da orientamento) + HttpUrl deprecato", "Fix: import awaitAll, auth-test GET, cancel-running realistico", "Fix: parentesi associate + ruff F401", "Fix: resolution state, mappe nullable, ruff F841", "Audit-1 fix batch 1: backend robustezza (recovery, race, SSE, upload, sanitize, prune)"]
 }
