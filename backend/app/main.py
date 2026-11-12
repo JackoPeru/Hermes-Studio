@@ -21,7 +21,7 @@ from .config import (
 from .manager import ManagerClient
 from .models import (
     AssetOut, CapabilitiesOut, CapabilityTask, GpuOut, HealthOut, JobCreate, JobOut,
-    ProjectIn, ProjectOut,
+    ProjectIn, ProjectOut, PruneIn, PruneOut,
 )
 from .storage import make_thumb, probe_video, safe_name, video_thumb
 from .workflows import DEFAULT_NEGATIVE, apply_style
@@ -963,6 +963,51 @@ async def delete_asset(aid: str, _: None = Depends(require_auth)):
     except OSError:
         pass
     return {"ok": True, "deleted": aid}
+
+
+@app.post("/api/v1/maintenance/prune", response_model=PruneOut)
+async def prune(body: PruneIn, _: None = Depends(require_auth)):
+    """Pulizia conservativa: job terminali vecchi + upload orfani vecchi.
+
+    Mai toccati: job attivi (queued/preparing/running/cancelling), asset,
+    thumbnail, progetti. Gli asset restano anche se il job che li ha creati
+    viene potato (provenienza via job_id conservata nella riga asset).
+    """
+    import time as _time
+    statuses = ["failed", "cancelled"]
+    if body.include_completed:
+        statuses.append("completed")
+    cutoff = db.now() - body.older_than_days * 86400
+    deleted_jobs = 0
+    cx = db.connect()
+    try:
+        ph = ",".join("?" for _ in statuses)
+        rows = cx.execute(
+            f"SELECT id FROM jobs WHERE status IN ({ph}) AND updated_at < ? LIMIT ?",
+            (*statuses, cutoff, body.limit)).fetchall()
+        for (jid,) in rows:
+            cx.execute("DELETE FROM jobs WHERE id=?", (jid,))
+            deleted_jobs += 1
+        cx.commit()
+    finally:
+        cx.close()
+    deleted_uploads = 0
+    freed = 0
+    ucut = _time.time() - body.prune_uploads_older_than_days * 86400
+    try:
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        for p in UPLOADS_DIR.iterdir():
+            try:
+                if not p.is_file() or p.stat().st_mtime >= ucut:
+                    continue
+                freed += p.stat().st_size
+                p.unlink()
+                deleted_uploads += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return PruneOut(deleted_jobs=deleted_jobs, deleted_uploads=deleted_uploads, freed_bytes=freed)
 
 
 @app.get("/api/v1/projects", response_model=list[ProjectOut])

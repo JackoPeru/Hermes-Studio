@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-WORKFLOWS_DIR = BASE_DIR / "workflows"
 DATA_DIR = Path(os.environ.get("HERMES_STUDIO_DATA", str(BASE_DIR / ".." / "data"))).resolve()
 ASSETS_DIR = DATA_DIR / "assets"
 THUMBS_DIR = DATA_DIR / "thumbs"

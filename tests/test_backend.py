@@ -114,19 +114,11 @@ def test_norm_wh_area_cap():
     w, h = m._norm_wh(1024, 1024)  # 1048576 > 1032192 -> clamp onesto
     assert w * h <= 1032192 and w % 32 == 0 and h % 32 == 0
 
-def test_workflow_builder_shapes():
-    from app.workflows import build_qwen_t2i
-    p = build_qwen_t2i(prompt="cat", negative="blur", width=770, height=900, seed=7, steps=20, job_id="job_abc")
-    assert p["5"]["inputs"]["width"] == 770  # builder keeps caller value; API layer snaps to 32
-    assert p["8"]["inputs"]["filename_prefix"] == "journey/job_abc"
-    assert p["6"]["inputs"]["seed"] == 7
-
-def test_workflow_prompt_with_placeholders_not_corrupted():
-    from app.workflows import build_qwen_t2i
-    tricky = "a poster saying {{WIDTH}} x {{HEIGHT}} and {{PROMPT}}"
-    p = build_qwen_t2i(prompt=tricky, negative="n", width=1024, height=1024, seed=1, steps=5, job_id="j1")
-    assert p["4"]["inputs"]["prompt"] == tricky
-    assert p["5"]["inputs"]["width"] == 1024
+def test_apply_style_templates():
+    from app.workflows import apply_style
+    assert "cinematic lighting" in apply_style("un vicolo", "cinematico")
+    assert apply_style("x", "inesistente") == "x"
+    assert apply_style("x", None) == "x"
 
 def test_cancel_queued_goes_cancelled(client):
     r = client.post("/api/v1/jobs", json={"taskType": "image", "prompt": "cancel me"})
@@ -313,3 +305,49 @@ async def test_image_worker_done_path(client, tmp_path, monkeypatch):
     import app.config as cfg
     assert (cfg.ASSETS_DIR / rel).is_file()
     assert (cfg.THUMBS_DIR / (outs[0] + ".jpg")).is_file()
+
+def _old_job(client, status, days_ago, with_asset=False):
+    import app.db as dbmod
+    jid = dbmod.new_id("job")
+    old = dbmod.now() - days_ago * 86400
+    cx = dbmod.connect()
+    try:
+        cx.execute(
+            "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (jid, "image", status, "comfyui", "m", "p", "{}", old, old))
+        cx.commit()
+    finally:
+        cx.close()
+    return jid
+
+def test_prune_jobs_and_uploads(client, tmp_path):
+    import app.db as dbmod
+    import app.config as cfg
+    import os
+    old_failed = _old_job(client, "failed", 40)
+    old_done = _old_job(client, "completed", 40)
+    new_failed = _old_job(client, "failed", 1)
+    cfg.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    old_up = cfg.UPLOADS_DIR / "old.bin"
+    new_up = cfg.UPLOADS_DIR / "new.bin"
+    old_up.write_bytes(b"0" * 100)
+    new_up.write_bytes(b"0" * 50)
+    old_t = dbmod.now() - 10 * 86400
+    os.utime(old_up, (old_t, old_t))
+    r = client.post("/api/v1/maintenance/prune", json={})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["deleted_jobs"] == 1
+    assert j["deleted_uploads"] == 1 and j["freed_bytes"] == 100
+    cx = dbmod.connect()
+    try:
+        ids = {x[0] for x in cx.execute("SELECT id FROM jobs").fetchall()}
+    finally:
+        cx.close()
+    assert old_failed not in ids  # potato via default
+    assert old_done in ids and new_failed in ids  # completed esclusi di default, recenti salvi
+    assert not old_up.exists() and new_up.exists()
+    r = client.post("/api/v1/maintenance/prune", json={"include_completed": True})
+    assert r.json()["deleted_jobs"] == 1
+

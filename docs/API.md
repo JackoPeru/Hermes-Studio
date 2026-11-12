@@ -12,6 +12,7 @@ Base: `http(s)://<backend-privato>/api/v1`. Auth: `Authorization: Bearer <pairin
 - `POST /assets/upload` (multipart streaming, JPEG/PNG/WebP ≤25 MB, scrittura atomica) → `{asset_upload_id, path, bytes}`. Errori: `413` oltre limite, `415` tipo non supportato.
 - `GET /assets[?kind&favorite]` (combo supportata) · `GET /assets/{id}` · `GET /assets/{id}/download` · `GET /assets/{id}/thumbnail` (auth richieste) · `POST /assets/{id}/favorite?on=` (404 se asset assente) · `DELETE /assets/{id}` (file+thumb+db+preferiti/progetti, 404 se assente)
 - `GET/POST /projects` · `POST /projects/{pid}/assets/{aid}` (404 se project/asset assenti)
+- `POST /maintenance/prune` `{older_than_days=30, include_completed=false, prune_uploads_older_than_days=7, limit=500}` → `{deleted_jobs, deleted_uploads, freed_bytes}`. Solo job terminali vecchi + upload orfani vecchi; asset/progetti mai toccati.
 
 Job: `queued→preparing→running→completed|failed|cancelling→cancelled`. Restart backend: `preparing→queued`; `running` senza `comfy_prompt_id→queued`, con `prompt_id` resta `running` e viene riconciliato via `/history` (niente doppi submit).
 

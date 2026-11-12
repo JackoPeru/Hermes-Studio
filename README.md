@@ -6,7 +6,7 @@ App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per g
 - `backend/` FastAPI `/api/v1/*` (jobs persistenti SQLite WAL, ComfyUIAdapter, coda seriale, SSE, assets+thumbs, progetti/preferiti).
 - `android/` app nativa: Home, Crea (immagine), Crea video, Libreria, Impostazioni (pairing + GPU live + **auto-update in-app**). Nessuna WebView.
 - `docs/DISCOVERY.md` ricognizione reale, `docs/API.md` contratto, `docs/PAIRING.md` pairing Tailscale, `docs/RUNBOOK.md` operativo, `docs/UPDATE.md` auto-update, `docs/VIDEO_H3.md` pipeline video verificata.
-- `tests/test_backend.py` 18 test verdi. `.env.example` per tutte le env.
+- `tests/test_backend.py` 17 test verdi. `.env.example` per tutte le env.
 
 ## V2 (corrente)
 - Dettaglio job (tap in coda: stato/progresso reali, output, annulla, riusa) e dettaglio asset (player video in-app, scarica in galleria, condividi, preferito, assegna a progetto, riusa, elimina, fullscreen con zoom per le immagini).

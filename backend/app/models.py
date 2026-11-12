@@ -8,15 +8,6 @@ class TaskType(str, Enum):
     image = "image"
     video = "video"
 
-class JobStatus(str, Enum):
-    queued = "queued"
-    preparing = "preparing"
-    running = "running"
-    completed = "completed"
-    failed = "failed"
-    cancelling = "cancelling"
-    cancelled = "cancelled"
-
 class HealthOut(BaseModel):
     status: Literal["ok"] = "ok"
     backend_version: str
@@ -88,6 +79,17 @@ class GpuOut(BaseModel):
     util_pct: float | None = None
     mem_used_mb: float | None = None
     mem_total_mb: float | None = None
+
+class PruneIn(BaseModel):
+    older_than_days: float = Field(default=30, ge=0)
+    include_completed: bool = False
+    prune_uploads_older_than_days: float = Field(default=7, ge=0)
+    limit: int = Field(default=500, ge=1, le=5000)
+
+class PruneOut(BaseModel):
+    deleted_jobs: int = 0
+    deleted_uploads: int = 0
+    freed_bytes: int = 0
 
 class ProjectIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
