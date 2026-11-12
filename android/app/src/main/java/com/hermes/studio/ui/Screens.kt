@@ -472,22 +472,26 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
         StylePreset("realistico", "Realistico", Icons.Filled.CameraAlt),
         StylePreset("fantasy", "Fantasy", Icons.Filled.AutoAwesome)
     )
-    // Risoluzioni verificate: tutte sotto il cap area manager (1032192 px) e multipli di 32.
+    // Tier nomi familiari, pixel esatti. Tetto immagini 2K (2560×1440) dal manager;
+    // lo snap a 32px resta di sicurezza (dettaglio job mostra i reali).
     fun resOptions(f: String): List<Triple<String, Int, Int>> = when (f) {
         "16:9" -> listOf(
-            Triple("Alta · 1344×768", 1344, 768),
-            Triple("Media · 960×544", 960, 544),
-            Triple("Bassa · 832×480", 832, 480)
+            Triple("2K · 2560 × 1440", 2560, 1440),
+            Triple("Full HD · 1920 × 1080", 1920, 1080),
+            Triple("HD · 1280 × 720", 1280, 720),
+            Triple("480p · 854 × 480", 854, 480)
         )
         "9:16" -> listOf(
-            Triple("Alta · 768×1344", 768, 1344),
-            Triple("Media · 544×960", 544, 960),
-            Triple("Bassa · 480×832", 480, 832)
+            Triple("2K · 1440 × 2560", 1440, 2560),
+            Triple("Full HD · 1080 × 1920", 1080, 1920),
+            Triple("HD · 720 × 1280", 720, 1280),
+            Triple("480p · 480 × 854", 480, 854)
         )
         else -> listOf(
-            Triple("Alta · 992×992", 992, 992),
-            Triple("Media · 768×768", 768, 768),
-            Triple("Bassa · 512×512", 512, 512)
+            Triple("2K · 1920 × 1920", 1920, 1920),
+            Triple("Full HD · 1080 × 1080", 1080, 1080),
+            Triple("HD · 720 × 720", 720, 720),
+            Triple("480p · 480 × 480", 480, 480)
         )
     }
     val stepsFor = mapOf("Bozza" to 12, "Alta" to 20, "Ultra" to 28)
@@ -558,7 +562,8 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
         }
         item {
             val resOpts = resOptions(format)
-            val resSel = resOpts.firstOrNull { it.first == resolution } ?: resOpts.first()
+            // Default prudente: Full HD (indice 1), non il massimo. Scelta esplicita rispettata.
+            val resSel = resOpts.firstOrNull { it.first == resolution } ?: resOpts.getOrNull(1) ?: resOpts.first()
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Box(Modifier.weight(1f)) { DropDownField("Formato", format, listOf("1:1", "16:9", "9:16"), { format = it }, Icons.Filled.Crop) }
@@ -702,7 +707,14 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
     var videoUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var selectedId by remember { mutableStateOf<String?>(null) }
     var prompt by remember { mutableStateOf("") }
-    var format by remember { mutableStateOf("16:9") }
+    // Solo 720p/480p: le uniche risoluzioni offerte per H3 (il manager allinea ai multipli di 32).
+    val videoFormats = mapOf(
+        "16:9 · 720p" to (1280 to 720),
+        "16:9 · 480p" to (854 to 480),
+        "9:16 · 720p" to (720 to 1280),
+        "9:16 · 480p" to (480 to 854)
+    )
+    var format by remember { mutableStateOf("16:9 · 720p") }
     var state by remember { mutableStateOf("Pronto") }
     var capsVideo by remember { mutableStateOf<com.hermes.studio.CapTask?>(null) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
@@ -819,7 +831,7 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.weight(1f)) { DropDownField("Formato", format, listOf("16:9 (1344×768)", "9:16 (768×1344)"), { format = it.substringBefore(" ") }, Icons.Filled.Crop) }
+                Box(Modifier.weight(1f)) { DropDownField("Formato", format, videoFormats.keys.toList(), { format = it }, Icons.Filled.Crop) }
                 Box(Modifier.weight(1f)) {
                     Surface(shape = RoundedCornerShape(14.dp), color = Card, border = BorderStroke(1.dp, CardBorder)) {
                         Column(Modifier.padding(horizontal = 10.dp, vertical = 10.dp)) {
@@ -848,7 +860,7 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             }
         }
         item {
-            val dims = if (format == "9:16") (768 to 1344) else (1344 to 768)
+            val dims = videoFormats[format] ?: (1280 to 720)
             GradientButton("Avvia rendering", Icons.Filled.PlayArrow, enabled = selectedId != null && prompt.isNotBlank(), onClick = {
                 val sid = selectedId ?: return@GradientButton
                 state = "Accodamento…"

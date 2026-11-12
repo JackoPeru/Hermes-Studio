@@ -109,10 +109,16 @@ def test_upload_limits_and_sniffing(client):
 
 def test_norm_wh_area_cap():
     import app.main as m
-    assert m._norm_wh(1344, 768) == (1344, 768)  # al cap, passa netto
+    assert m._norm_wh(1344, 768) == (1344, 768)  # al cap video, passa netto
     assert m._norm_wh(768, 1344) == (768, 1344)
-    w, h = m._norm_wh(1024, 1024)  # 1048576 > 1032192 -> clamp onesto
-    assert w * h <= 1032192 and w % 32 == 0 and h % 32 == 0
+    w, h = m._norm_wh(1024, 1024)  # sotto il cap immagini: solo snap
+    assert (w, h) == (1024, 1024)
+    w, h = m._norm_wh(2560, 1440)  # 2K: al cap immagini esatto
+    assert (w, h) == (2560, 1440)
+    w, h = m._norm_wh(3000, 3000)  # oltre: clamp onesto
+    assert w * h <= 3686400 and w % 32 == 0 and h % 32 == 0
+    w, h = m._norm_wh(2048, 2048, m._VIDEO_AREA_CAP_PX)  # video: tetto stretto invariato
+    assert w * h <= 1032192
 
 def test_apply_style_templates():
     from app.workflows import apply_style

@@ -18,8 +18,8 @@ Tutto sotto è rilevato via SSH read-only su `hermes`, non ipotizzato.
   `DISABLED_FULLSTEPS_OOM` upstream → mai usati dallo Studio.
 
 ## Flusso implementato (image-to-video)
-1. App: start frame dalla libreria + movement prompt + formato 16:9/9:16.
-2. Backend: `POST /jobs {taskType: video, asset_ids: [start], width, height}` → preset per formato.
+1. App: start frame dalla libreria + movement prompt + formato (16:9/9:16 in 720p o 480p, nient'altro).
+2. Backend: `POST /jobs {taskType: video, asset_ids: [start], width, height}` → preset per orientamento (il manager allinea ai multipli di 32 e al cap video).
 3. Worker: risolve lo start frame su disco → `POST manager /jobs/video
    {preset, parameters: {prompt, input_images: [abs], width, height, seed}}`
    (ruolo app, `app.key` — niente bypass del manager).

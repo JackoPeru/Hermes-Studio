@@ -632,26 +632,25 @@ async def gpu(_: None = Depends(require_auth)):
     return out
 
 
-def _norm_wh(w: int | None, h: int | None) -> tuple[int, int]:
+def _norm_wh(w: int | None, h: int | None, max_area: int = _IMAGE_AREA_CAP_PX) -> tuple[int, int]:
     w = w or 1024
     h = h or 1024
-    # snap to 32px (H3 latent rule as conservative default for all)
+    # snap to 32px (regola latente H3, default conservativo anche per Qwen:
+    # le dimensioni reali finiscono nel job e nell'asset, niente sorprese)
     w, h = max(64, w // 32 * 32), max(64, h // 32 * 32)
-    # Area cap del manager (validate_workflow: oltre -> 400 onesto).
-    # Stesso tetto dei preset video turbo: 1344x768 / 768x1344 passano netti.
-    if w * h > _AREA_CAP_PX:
+    if w * h > max_area:
         import math as _math
-        s = _math.sqrt(_AREA_CAP_PX / (w * h))
+        s = _math.sqrt(max_area / (w * h))
         w, h = max(64, int(w * s) // 32 * 32), max(64, int(h * s) // 32 * 32)
     return w, h
 
 
-# Preset video verificati sul server (turbo 4-step, ~5s @24fps).
-# 16:9 e 9:16 mappano ai preset manager journey_video_preview / chained.
-# Full-steps (quality/first_last/reference) restano DISABLED upstream (OOM).
-# Area cap del manager (validate_workflow rifiuta oltre con 400 onesto):
-# 1344x768 e 768x1344 passano netti, 1024x1024 no -> clamp in _norm_wh.
-_AREA_CAP_PX = 1032192
+# Cap area: il manager rifiuta oltre con 400 onesto (validate_workflow).
+# Video: tetto stretto anti-OOM (i preset turbo stanno a 1344x768 max).
+# Immagini: tetto 2K per still con SaveImage (proprietario 2026-11-12),
+# video e workflow senza output restano al tetto stretto.
+_VIDEO_AREA_CAP_PX = 1032192
+_IMAGE_AREA_CAP_PX = 2560 * 1440
 VIDEO_PRESETS = {
     "wide": ("journey_video_preview", 1344, 768),
     "tall": ("journey_video_preview_chained", 768, 1344),
@@ -674,7 +673,7 @@ async def create_job(body: JobCreate, _: None = Depends(require_auth)):
         model = body.model or "minimax-h3-turbo-4step"
         prompt = body.prompt.strip()
         preset, pw, ph = _video_preset_for(body.width or 1344, body.height or 768)
-        w, h = _norm_wh(pw, ph)
+        w, h = _norm_wh(pw, ph, _VIDEO_AREA_CAP_PX)
         steps = body.steps or 4
         seed = body.seed if body.seed is not None else random.randint(0, 2**31 - 1)
         params = {"width": w, "height": h, "steps": steps, "seed": seed,

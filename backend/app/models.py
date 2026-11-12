@@ -35,8 +35,8 @@ class JobCreate(BaseModel):
     model: str | None = None
     prompt: str = Field(min_length=1, max_length=4000)
     negative_prompt: str | None = Field(default=None, max_length=2000)
-    width: int | None = Field(default=None, ge=64, le=2048)
-    height: int | None = Field(default=None, ge=64, le=2048)
+    width: int | None = Field(default=None, ge=64, le=2560)
+    height: int | None = Field(default=None, ge=64, le=2560)
     steps: int | None = Field(default=None, ge=1, le=60)
     seed: int | None = None
     style_preset: str | None = None  # Cinematico/Anime/Realistico/Fantasy -> prompt template only
