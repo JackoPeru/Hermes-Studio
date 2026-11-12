@@ -12,8 +12,10 @@ EnvironmentFile=/etc/hermes/hermes-studio.env
 Environment=HERMES_STUDIO_DATA=/var/lib/hermes-studio
 Environment=HERMES_STUDIO_HOST=127.0.0.1
 Environment=HERMES_STUDIO_PORT=8650
+ExecStartPre=/usr/bin/install -d -o matteo -g matteo -m 0700 /var/lib/hermes-studio
+# Best-effort nel sandbox (la dir viene creata sul host al deploy); il '-' ignora fallimenti.
+-ExecStartPre=/usr/bin/install -d -o matteo -g matteo -m 0700 /home/matteo/.hermes/hermes-studio-in
 ExecStart=/opt/hermes/hermes-studio/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8650
-ExecPreStart=/usr/bin/install -d -o matteo -g matteo -m 0700 /var/lib/hermes-studio
 Restart=on-failure
 RestartSec=5
 UMask=0027

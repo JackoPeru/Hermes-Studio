@@ -35,8 +35,12 @@ Tutto sotto è rilevato via SSH read-only su `hermes`, non ipotizzato.
 - Camera motion (Dolly/Pan/Loop): solo suggerimenti testuali appesi al prompt —
   il preset non ha parametri camera strutturali.
 - Lo start frame deve stare in una root fidata del manager (`~/.hermes`,
-  `/opt/hermes`, `/tmp`): lo Studio lo copia in `/tmp/hs_{job}_in.*`, sottomette,
-  e cancella subito dopo il 202. Percorsi fuori root = 400 onesto dal manager.
+  `/opt/hermes`, `/tmp`): lo Studio mette in staging in
+  `~/.hermes/hermes-studio-in` (root fidata E scrivibile: la unit ha
+  `ReadWritePaths` dedicato; `/tmp` e `/opt` non sono scrivibili nel sandbox
+  `ProtectSystem=strict` — verificato con crash reale e traceback), submit,
+  pulizia subito dopo. Percorsi fuori root = 400 onesto. Audit 2026-11-12:
+  worker blindato con try/except + log, un job guasto non ferma più la coda.
 - La coda Studio resta seriale: un video lungo blocca le immagini (VRAM reale).
 - ComfyUI parte via manager quando serve (stato `media_online`); job in coda
   durante LLM residente è comportamento normale, non errore.

@@ -338,7 +338,12 @@ async def _run_one_video(job_id: str) -> None:
             from pathlib import Path as _P
             import shutil as _sh2
             stage_dir = _P.home() / ".hermes" / "hermes-studio-in"
-            stage_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                stage_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                # Nel sandbox systemd i parent potrebbero non essere elencabili:
+                # la dir viene pre-creata sul host; se manca davvero, fallisce la copy sotto.
+                pass
             stage = stage_dir / f"hs_{job_id}_in{_P(src_path).suffix.lower() or '.png'}"
             try:
                 await asyncio.to_thread(_sh2.copy2, src_path, stage)
