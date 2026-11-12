@@ -1,11 +1,11 @@
 {
-  "versionCode": 24,
-  "versionName": "0.1.1-gh24",
-  "tagName": "studio-24",
-  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-24/HermesStudio-24.apk",
+  "versionCode": 25,
+  "versionName": "0.1.1-gh25",
+  "tagName": "studio-25",
+  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-25/HermesStudio-25.apk",
   "assetSize": 22437468,
-  "sha256": "286eba3c22a443cb5c76e663ce0259ccee23119c324133ccbe3678ba3c61be20",
-  "signature": "MEUCIQDZYDLAxA4QraucHEF9usn5pD6EHd/WCEQtc0ZYOa33WgIgPSCllLfnsoej17XinnYSSndhen0uwY2FxiBjoCJYmHY=",
-  "publishedAt": "2026-11-12T10:20:36Z",
+  "sha256": "d62e4dd66c19c2470bd290ea752fb7f658f79b5dfa65f65c1522a639b4217486",
+  "signature": "",
+  "publishedAt": "2026-11-12T11:04:57Z",
   "notes": ["V1 + auto-update in-app"]
 }
