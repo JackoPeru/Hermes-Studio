@@ -1,11 +1,11 @@
 {
-  "versionCode": 27,
-  "versionName": "0.1.1-gh27",
-  "tagName": "studio-27",
-  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-27/HermesStudio-27.apk",
-  "assetSize": 22453856,
-  "sha256": "5d2b3ff8ae2f113dc2f7af70afc87ca413cbbf3408e48970613c13bb9987a323",
-  "signature": "MEUCIQDo/xrAE/GZ2DdMNRZnvRyh5bduK5Ii/2zQ3E4jj+t7awIgL1sM8/LJSOrwgJMpfPoduuof+7+LLkNiTwH1s7EzdAU=",
-  "publishedAt": "2026-11-12T12:31:37Z",
-  "notes": ["Fix: stickyHeader non disponibile, chips come item normale", "Fix import mancanti (saveable, GridItemSpan, stickyHeader)", "Crea unificata image/video + multi-ref verificati + libreria single-grid", "Fix workflow note release (heredoc invece di one-liner)", "Fix: arg JobCreate + forward-ref picker", "V3: ritocco immagini, upload indicizzati, durate video, prune UI, release notes"]
+  "versionCode": 28,
+  "versionName": "0.1.1-gh28",
+  "tagName": "studio-28",
+  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-28/HermesStudio-28.apk",
+  "assetSize": 22470268,
+  "sha256": "bb83fe36bdc8cd3b591e20c5cacfa3f62a39cc066ff67a3fd6cec4c34bd48fe7",
+  "signature": "",
+  "publishedAt": "2026-11-12T13:27:54Z",
+  "notes": ["Audit-2 fix: terminali condizionali, nav/share Main, MIME reali, Job model, docs", "Fix: 480p onorato (preset solo da orientamento) + HttpUrl deprecato", "Fix: import awaitAll, auth-test GET, cancel-running realistico", "Fix: parentesi associate + ruff F401", "Fix: resolution state, mappe nullable, ruff F841", "Audit-1 fix batch 1: backend robustezza (recovery, race, SSE, upload, sanitize, prune)"]
 }
