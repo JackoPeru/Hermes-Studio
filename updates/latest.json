@@ -1,11 +1,11 @@
 {
-  "versionCode": 26,
-  "versionName": "0.1.1-gh26",
-  "tagName": "studio-26",
-  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-26/HermesStudio-26.apk",
-  "assetSize": 22437468,
-  "sha256": "82d1c8d6861f1d59e8991e70fd02435490b5fea823c1d97f2de4fabfde7d8a63",
-  "signature": "MEYCIQCWvnYWX9rySIuOD4EcDGhUPpXO974/t9H7BEfETFhM5AIhALCjVKzp4+GguYl0zxDO/Wriy6XUN7P5l/UBZqH1ZIoA",
-  "publishedAt": "2026-11-12T12:02:54Z",
-  "notes": ["V3: ritocco immagini, upload indicizzati, durate video, prune UI, release notes", "Fix: arg JobCreate + forward-ref picker", "Fix workflow note release (heredoc invece di one-liner)"]
+  "versionCode": 27,
+  "versionName": "0.1.1-gh27",
+  "tagName": "studio-27",
+  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-27/HermesStudio-27.apk",
+  "assetSize": 22453856,
+  "sha256": "5d2b3ff8ae2f113dc2f7af70afc87ca413cbbf3408e48970613c13bb9987a323",
+  "signature": "",
+  "publishedAt": "2026-11-12T12:31:37Z",
+  "notes": ["Fix: stickyHeader non disponibile, chips come item normale", "Fix import mancanti (saveable, GridItemSpan, stickyHeader)", "Crea unificata image/video + multi-ref verificati + libreria single-grid", "Fix workflow note release (heredoc invece di one-liner)", "Fix: arg JobCreate + forward-ref picker", "V3: ritocco immagini, upload indicizzati, durate video, prune UI, release notes"]
 }
