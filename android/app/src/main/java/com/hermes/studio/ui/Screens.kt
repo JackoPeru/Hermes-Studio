@@ -46,6 +46,7 @@ import coil.request.ImageRequest
 import com.hermes.studio.*
 import com.hermes.studio.update.AppUpdateManager
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex

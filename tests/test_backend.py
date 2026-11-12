@@ -466,17 +466,27 @@ async def test_cancel_running_propagates_to_manager(client, monkeypatch):
         cx.execute(
             "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,comfy_prompt_id,created_at,updated_at)"
             " VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (jid, "video", "cancelling", "comfyui", "x", "p", "{}", "mid-z",
+            (jid, "video", "running", "comfyui", "x", "p", "{}", "mid-z",
              dbmod.now(), dbmod.now()))
         cx.commit()
     finally:
         cx.close()
     cancelled = []
+    calls = {"n": 0}
     class FakeMgr:
         async def submit_video(self, preset, params):
             raise AssertionError("no submit atteso")
         async def get_job(self, mid):
-            raise AssertionError("no poll atteso")
+            # Primo poll: l'utente annulla proprio ora.
+            calls["n"] += 1
+            if calls["n"] == 1:
+                c2 = dbmod.connect()
+                try:
+                    c2.execute("UPDATE jobs SET status='cancelling' WHERE id=?", (jid,))
+                    c2.commit()
+                finally:
+                    c2.close()
+            return {"job_id": mid, "status": "running", "progress": 0.5, "error": ""}
         async def cancel_job(self, mid):
             cancelled.append(mid)
             return {"job_id": mid, "status": "cancelled"}
@@ -553,7 +563,10 @@ def test_auth_all_protected_routes_401(client):
         ("post", "/api/v1/maintenance/prune"),
         ("delete", "/api/v1/assets/x"),
     ]:
-        r = getattr(c2, method)(path, json={} if method == "post" else None)
+        if method == "post":
+            r = getattr(c2, method)(path, json={})
+        else:
+            r = getattr(c2, method)(path)
         assert r.status_code == 401, (method, path, r.status_code)
 
 @pytest.mark.asyncio
