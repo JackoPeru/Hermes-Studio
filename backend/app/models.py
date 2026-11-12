@@ -39,6 +39,7 @@ class JobCreate(BaseModel):
     height: int | None = Field(default=None, ge=64, le=2560)
     steps: int | None = Field(default=None, ge=1, le=60)
     seed: int | None = None
+    duration: float | None = Field(default=None, ge=2, le=10)
     style_preset: str | None = None  # Cinematico/Anime/Realistico/Fantasy -> prompt template only
     asset_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = Field(default=None, max_length=128)

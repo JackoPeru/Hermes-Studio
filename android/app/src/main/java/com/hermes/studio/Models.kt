@@ -51,6 +51,7 @@ data class JobCreate(
     val height: Int? = null,
     val steps: Int? = null,
     val seed: Long? = null,
+    val duration: Double? = null,
     val style_preset: String? = null,
     val asset_ids: List<String> = emptyList(),
     val idempotency_key: String? = null
@@ -74,6 +75,29 @@ data class Job(
     val outputs: List<String> = emptyList(),
     val created_at: String = "",
     val updated_at: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class UploadOut(
+    val asset_upload_id: String = "",
+    val asset_id: String = "",
+    val path: String = "",
+    val bytes: Long = 0L
+)
+
+@JsonClass(generateAdapter = true)
+data class PruneBody(
+    val older_than_days: Double = 30.0,
+    val include_completed: Boolean = false,
+    val prune_uploads_older_than_days: Double = 7.0,
+    val limit: Int = 500
+)
+
+@JsonClass(generateAdapter = true)
+data class PruneOut(
+    val deleted_jobs: Int = 0,
+    val deleted_uploads: Int = 0,
+    val freed_bytes: Long = 0L
 )
 
 @JsonClass(generateAdapter = true)

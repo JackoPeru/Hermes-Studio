@@ -100,10 +100,26 @@ def test_video_enqueue_uses_manager_preset(client, monkeypatch):
     assert p["video_preset"] == "journey_video_preview"
     assert p["asset_ids"] == [aid]
 
+def test_image_edit_mode_maps_preset(client):
+    import app.db as dbmod
+    aid = _seed_asset(client)
+    r = client.post("/api/v1/jobs", json={"taskType": "image", "prompt": "aggiungi un gatto",
+                                          "asset_ids": [aid]})
+    assert r.status_code == 201, r.text
+    cx = dbmod.connect()
+    try:
+        row = cx.execute("SELECT params FROM jobs WHERE id=?", (r.json()["id"],)).fetchone()
+    finally:
+        cx.close()
+    assert json.loads(row["params"])["image_preset"] == "edit_image"
+
 def test_upload_limits_and_sniffing(client):
     big = b"\xff\xd8\xff" + b"0" * 10
     r = client.post("/api/v1/assets/upload", files={"f": ("a.jpg", big, "image/jpeg")})
     assert r.status_code == 200
+    j = r.json()
+    assert j["asset_id"]  # upload indicizzati in libreria
+    assert client.get(f"/api/v1/assets/{j['asset_id']}").status_code == 200
     r = client.post("/api/v1/assets/upload", files={"f": ("a.txt", b"hello world", "text/plain")})
     assert r.status_code == 415
 

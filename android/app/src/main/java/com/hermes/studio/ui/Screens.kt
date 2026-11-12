@@ -1,6 +1,8 @@
 package com.hermes.studio.ui
 
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -462,9 +464,22 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
     var resolution by remember { mutableStateOf("Alta") }
     var count by remember { mutableStateOf(1) }
     var state by remember { mutableStateOf("Pronto") }
+    var refId by remember { mutableStateOf<String?>(null) }
     var recent by remember { mutableStateOf<List<Asset>>(emptyList()) }
     var recentUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        state = "Caricamento foto…"
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val up = repo.uploadImage(uri)
+                refId = up.asset_id.ifBlank { null } ?: up.asset_upload_id
+                refreshRecent()
+                state = "Foto caricata: verrà usata come riferimento."
+            } catch (e: Exception) { state = "Upload fallito: ${e.message}" }
+        }
+    }
 
     val styles = listOf(
         StylePreset("cinematico", "Cinematico", Icons.Filled.Movie),
@@ -584,27 +599,59 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
         item {
             Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, CardBorder)) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Immagini di riferimento (opzionale)", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Immagine di riferimento (opzionale)", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (refId != null) {
+                            TextButton(onClick = { refId = null }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                                Text("Rimuovi", color = Warn, fontSize = 13.sp)
+                            }
+                        }
+                    }
                     Text(
-                        "La pipeline image-to-image non è ancora validata end-to-end: per ora disabilitata.",
+                        if (refId == null) "Con un riferimento, il job diventa ritocco (preset edit Qwen)."
+                        else "Ritocco attivo: descrivi la modifica nel prompt.",
                         color = Muted, fontSize = 13.sp
                     )
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        repeat(4) {
-                            Box(
-                                Modifier.weight(1f).aspectRatio(1f).clip(RoundedCornerShape(12.dp))
-                                    .drawBehind {
-                                        drawRoundRect(
-                                            color = Muted.copy(alpha = 0.5f), style = Stroke(
-                                                width = 3f,
-                                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 10f), 0f)
-                                            ),
-                                            cornerRadius = CornerRadius(30f, 30f)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp), color = Color.Transparent,
+                                border = BorderStroke(1.dp, AccentV.copy(alpha = 0.6f)),
+                                onClick = { picker.launch("image/*") }
+                            ) {
+                                Column(
+                                    Modifier.size(104.dp, 118.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(Icons.Filled.AddPhotoAlternate, null, tint = AccentV, modifier = Modifier.size(26.dp))
+                                    Text("Carica foto", color = AccentV, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                        items(recent, key = { it.id }) { a ->
+                            val req = rememberImgReq(recentUrls[a.id], loader)
+                            val sel = refId == a.id
+                            Surface(
+                                shape = RoundedCornerShape(12.dp), color = Card,
+                                border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
+                                onClick = { refId = if (sel) null else a.id }
+                            ) {
+                                Box(Modifier.size(104.dp, 118.dp)) {
+                                    if (req != null && loader != null) {
+                                        AsyncImage(
+                                            model = req, imageLoader = loader!!, contentDescription = a.id,
+                                            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                                         )
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) { Icon(Icons.Filled.Image, null, tint = Muted.copy(alpha = 0.6f), modifier = Modifier.size(26.dp)) }
+                                    }
+                                    if (sel) {
+                                        Surface(shape = CircleShape, color = AccentV, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)) {
+                                            Icon(Icons.Filled.Check, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -628,18 +675,20 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             }
         }
         item {
-            GradientButton("Genera immagine", Icons.Filled.AutoAwesome, enabled = prompt.isNotBlank(), onClick = {
+            val isEdit = refId != null
+            GradientButton(if (isEdit) "Ritocca immagine" else "Genera immagine", Icons.Filled.AutoAwesome, enabled = prompt.isNotBlank(), onClick = {
                 val opts = resOptions(format)
                 val sel = opts.firstOrNull { it.first == resolution } ?: opts.first()
                 val steps = stepsFor[quality] ?: 20
+                val refs = refId?.let { listOf(it) } ?: emptyList()
                 state = "Accodamento…"
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         val api = repo.api()
                         repeat(count) {
-                            api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, preset, emptyList(), "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
+                            api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, null, null, preset, refs, "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
                         }
-                        state = "Inserito in coda (${sel.second}×${sel.third}, $steps passi): segui lo stato in Home."
+                        state = (if (isEdit) "Ritocco" else "Generazione") + " in coda (${sel.second}×${sel.third}, $steps passi): segui lo stato in Home."
                         refreshRecent()
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
@@ -715,6 +764,7 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         "9:16 · 480p" to (480 to 854)
     )
     var format by remember { mutableStateOf("16:9 · 720p") }
+    var duration by remember { mutableStateOf("5 s") }
     var state by remember { mutableStateOf("Pronto") }
     var capsVideo by remember { mutableStateOf<com.hermes.studio.CapTask?>(null) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
@@ -832,14 +882,7 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(Modifier.weight(1f)) { DropDownField("Formato", format, videoFormats.keys.toList(), { format = it }, Icons.Filled.Crop) }
-                Box(Modifier.weight(1f)) {
-                    Surface(shape = RoundedCornerShape(14.dp), color = Card, border = BorderStroke(1.dp, CardBorder)) {
-                        Column(Modifier.padding(horizontal = 10.dp, vertical = 10.dp)) {
-                            Text("Durata", color = Muted, fontSize = 11.sp, maxLines = 1)
-                            Text("~5 s (fissa)", fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
-                }
+                Box(Modifier.weight(1f)) { DropDownField("Durata", duration, listOf("3 s", "5 s", "8 s"), { duration = it }, Icons.Filled.Schedule) }
             }
         }
         item {
@@ -861,22 +904,23 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         }
         item {
             val dims = videoFormats[format] ?: (1280 to 720)
+            val durSecs = duration.substringBefore(" ").toDoubleOrNull() ?: 5.0
             GradientButton("Avvia rendering", Icons.Filled.PlayArrow, enabled = selectedId != null && prompt.isNotBlank(), onClick = {
                 val sid = selectedId ?: return@GradientButton
                 state = "Accodamento…"
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         repo.api().createJob(
-                            JobCreate("video", prompt, null, "minimax-h3-turbo-4step", null, dims.first, dims.second, 4, null, null, listOf(sid), "app-v-${System.currentTimeMillis()}-${prompt.hashCode()}")
+                            JobCreate("video", prompt, null, "minimax-h3-turbo-4step", null, dims.first, dims.second, 4, null, durSecs, null, listOf(sid), "app-v-${System.currentTimeMillis()}-${prompt.hashCode()}")
                         )
-                        state = "Inserito in coda: segui lo stato in Home."
+                        state = "Inserito in coda (~${durSecs.toInt()} s): segui lo stato in Home."
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
                 }
             })
             Spacer(Modifier.height(4.dp))
             Text(state, color = Muted, fontSize = 13.sp)
-            Text("Il rendering gira sul server anche ad app chiusa. Durata fissa ~5 s (preset turbo).", color = Muted, fontSize = 12.sp)
+            Text("Il rendering gira sul server anche ad app chiusa.", color = Muted, fontSize = 12.sp)
         }
         item {
             SectionHeader(Icons.Filled.History, "Video recenti", "Vedi tutto", onAction = { onOpenAsset("library") })
@@ -1257,6 +1301,21 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
                                 (queueLen?.let { q -> " · $q job in coda" } ?: ""),
                             color = Muted, fontSize = 13.sp
                         )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = {
+                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                try {
+                                    val r = repo.api().prune(PruneBody())
+                                    msg = "Pulizia: ${r.deleted_jobs} job, ${r.deleted_uploads} file (${r.freed_bytes / 1024} KB)."
+                                    refreshSystem()
+                                } catch (e: Exception) { msg = "Pulizia fallita: ${e.message}" }
+                            }
+                        }, contentPadding = PaddingValues(0.dp)) {
+                            Icon(Icons.Filled.DeleteSweep, null, tint = AccentV, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Pulisci cronologia (falliti >30gg, upload >7gg)", color = AccentV, fontSize = 13.sp)
+                        }
                     }
                     Text(
                         "Nessuna porta pubblica, nessuna telemetria esterna, nessun cloud. Solo tailnet privata + bearer.",

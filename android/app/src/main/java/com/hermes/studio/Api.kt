@@ -18,8 +18,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
@@ -29,7 +32,9 @@ import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.Multipart
 import retrofit2.http.POST
+import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
@@ -65,11 +70,15 @@ interface StudioApi {
         @Query("favorite") favorite: Boolean? = null
     ): List<Asset>
     @GET("api/v1/assets/{id}") suspend fun asset(@Path("id") id: String): Asset
+    @Multipart
+    @POST("api/v1/assets/upload")
+    suspend fun upload(@Part file: MultipartBody.Part): UploadOut
     @POST("api/v1/assets/{id}/favorite")
     suspend fun favorite(@Path("id") id: String, @Query("on") on: Boolean = true): ResponseBody
     @POST("api/v1/projects/{pid}/assets/{aid}")
     suspend fun addToProject(@Path("pid") pid: String, @Path("aid") aid: String): ResponseBody
     @DELETE("api/v1/assets/{id}") suspend fun deleteAsset(@Path("id") id: String): ResponseBody
+    @POST("api/v1/maintenance/prune") suspend fun prune(@Body b: PruneBody): PruneOut
     @GET("api/v1/projects") suspend fun projects(): List<Project>
     @POST("api/v1/projects") suspend fun createProject(@Body b: ProjectCreate): Project
 }
@@ -148,6 +157,16 @@ class StudioRepo(private val ctx: Context) {
 
     suspend fun deleteAsset(id: String) {
         api().deleteAsset(id)
+    }
+
+    /** Upload foto dal telefono (Photo Picker): diventa subito elemento di libreria. */
+    suspend fun uploadImage(uri: Uri): UploadOut = withContext(Dispatchers.IO) {
+        val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: throw IllegalStateException("File non leggibile")
+        if (bytes.size > 25 * 1024 * 1024) throw IllegalStateException("File oltre 25 MB")
+        val part = MultipartBody.Part.createFormData(
+            "f", "upload.jpg", bytes.toRequestBody("image/*".toMediaType()))
+        api().upload(part)
     }
 
     /** SSE live: chiama onJobsChanged a ogni evento job (con reconnect del client). */

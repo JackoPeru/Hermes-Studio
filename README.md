@@ -1,6 +1,6 @@
-# Hermes Studio — V2 (vertical slice completa)
+# Hermes Studio — V3
 
-App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per generare immagini (Qwen-Image 2.1) e video (MiniMax H3 turbo, image-to-video) via ComfyUI sul server `hermes`.
+App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per generare immagini (Qwen-Image 2.1 text/edit, fino al 2K) e video (MiniMax H3 turbo image-to-video, 720p/480p) via ComfyUI sul server `hermes`.
 
 ## Struttura
 - `backend/` FastAPI `/api/v1/*` (jobs persistenti SQLite WAL, ComfyUIAdapter, coda seriale, SSE, assets+thumbs, progetti/preferiti).
@@ -8,8 +8,13 @@ App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per g
 - `docs/DISCOVERY.md` ricognizione reale, `docs/API.md` contratto, `docs/PAIRING.md` pairing Tailscale, `docs/RUNBOOK.md` operativo, `docs/UPDATE.md` auto-update, `docs/VIDEO_H3.md` pipeline video verificata.
 - `tests/test_backend.py` 17 test verdi. `.env.example` per tutte le env.
 
-## V2 (corrente)
+## V2
 - Dettaglio job (tap in coda: stato/progresso reali, output, annulla, riusa) e dettaglio asset (player video in-app, scarica in galleria, condividi, preferito, assegna a progetto, riusa, elimina, fullscreen con zoom per le immagini).
+
+## V3 (corrente)
+- Ritocco immagini (preset edit Qwen con start frame), upload foto dal telefono indicizzate in libreria.
+- Video: durate 3/5/8s, formati 720p/480p; player in-app, durate reali ovunque.
+- Quadro GPU live in Impostazioni, pulizia cronologia, note release dal changelog.
 - SSE live (`GET /events` + fallback poll 15s) invece di polling cieco; niente recompose a vuoto, request Coil stabili, ricerca Libreria client-side.
 - `DELETE /api/v1/assets/{id}` + `GET /api/v1/assets/{id}` con test.
 

@@ -77,6 +77,7 @@ jobs:
           APK_SIZE="$(stat -c%s "${GITHUB_WORKSPACE}/${APK_NAME}")"
           APK_SHA="$(sha256sum "${GITHUB_WORKSPACE}/${APK_NAME}" | cut -d' ' -f1)"
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${APK_NAME}"
+          NOTES_JSON="$(git log --format=%s -n 8 | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip() and not l.startswith(("Publish update", "Update feed", "Merge "))][:6] or ["Miglioramenti e rifiniture."], ensure_ascii=False)')"
           mkdir -p "${GITHUB_WORKSPACE}/updates"
           cat > "${GITHUB_WORKSPACE}/updates/latest.json" <<EOF
           {
@@ -88,7 +89,7 @@ jobs:
             "sha256": "${APK_SHA}",
             "signature": "",
             "publishedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "notes": ["V1 + auto-update in-app"]
+            "notes": ${NOTES_JSON}
           }
           EOF
           echo "MANIFEST-DA-FIRMARE: hermes-studio-update-v1 | ${HERMES_VERSION_CODE} | ${HERMES_VERSION_NAME} | ${APK_URL} | ${APK_SIZE} | ${APK_SHA}"

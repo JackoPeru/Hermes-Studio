@@ -11,7 +11,7 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "studio.db"
 
 API_VERSION = "1.0.0"
-BACKEND_VERSION = "0.1.0"
+BACKEND_VERSION = "0.2.0"
 
 # Private bind by default: loopback only. Tailscale Serve runs in front when configured.
 HOST = os.environ.get("HERMES_STUDIO_HOST", "127.0.0.1")

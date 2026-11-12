@@ -129,10 +129,53 @@ async def _run_one(job_id: str) -> None:
         await _run_one_image(job_id)
 
 
+async def _stage_manager_input(job_id: str, asset_id: str) -> str | None:
+    """Copia un asset libreria nella staging fidata dal manager.
+
+    Ritorna il path assoluto o None (asset mancante/file illeggibile/staging
+    impossibile). Il chiamante cancella il file dopo il submit accettato.
+    """
+    from pathlib import Path as _P
+    import shutil as _sh
+    cx = db.connect()
+    try:
+        rr = cx.execute("SELECT rel_path FROM assets WHERE id=?", (asset_id,)).fetchone()
+    finally:
+        cx.close()
+    if not rr:
+        return None
+    cand = ASSETS_DIR / safe_name(rr["rel_path"])
+    if not cand.is_file():
+        return None
+    stage_dir = _P.home() / ".hermes" / "hermes-studio-in"
+    try:
+        stage_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    stage = stage_dir / f"hs_{job_id}_in{cand.suffix.lower() or '.png'}"
+    try:
+        await asyncio.to_thread(_sh.copy2, str(cand.resolve()), stage)
+    except OSError:
+        return None
+    return str(stage)
+
+
+def _unstage(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        from pathlib import Path as _P
+        p = _P(path)
+        if p.is_file():
+            p.unlink()
+    except OSError:
+        pass
+
+
 async def _run_one_image(job_id: str) -> None:
-    """Text-to-image via GPU-manager (preset create_image, Qwen 2.1).
-    Niente Comfy diretto: in AUTO il manager fa unload LLM -> avvio Comfy ->
-    run -> restore LLM. Il submit accoda, il resto lo orchestra lui."""
+    """Text-to-image (preset create_image) o image-to-image (preset edit_image,
+    con start frame) via GPU-manager. Niente Comfy diretto: in AUTO il manager
+    fa unload LLM -> avvio Comfy -> run -> restore LLM."""
     cx = db.connect()
     try:
         row = cx.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -156,15 +199,32 @@ async def _run_one_image(job_id: str) -> None:
         mgr = _manager()
         mid = existing_mid
         if not mid:
+            preset = params.get("image_preset") or "create_image"
+            submit_params = {
+                "prompt": prompt_text,
+                "negative_prompt": params.get("negative_prompt") or DEFAULT_NEGATIVE,
+                "width": int(params.get("width") or 1024),
+                "height": int(params.get("height") or 1024),
+                "seed": int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
+                "steps": int(params.get("steps") or 20),
+            }
+            staged = None
+            if preset == "edit_image":
+                aids = params.get("asset_ids") or []
+                if not aids:
+                    cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                               ("edit richiede asset_ids con immagine di partenza", db.now(), job_id))
+                    cx.commit()
+                    return
+                staged = await _stage_manager_input(job_id, aids[0])
+                if not staged:
+                    cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                               ("immagine di partenza non trovata in libreria", db.now(), job_id))
+                    cx.commit()
+                    return
+                submit_params["input_images"] = [staged]
             try:
-                res = await mgr.submit_image("create_image", {
-                    "prompt": prompt_text,
-                    "negative_prompt": params.get("negative_prompt") or DEFAULT_NEGATIVE,
-                    "width": int(params.get("width") or 1024),
-                    "height": int(params.get("height") or 1024),
-                    "seed": int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
-                    "steps": int(params.get("steps") or 20),
-                })
+                res = await mgr.submit_image(preset, submit_params)
                 mid = str(res.get("job_id") or res.get("id") or "")
                 if not mid:
                     raise ValueError(f"manager senza job_id: {res}")
@@ -175,6 +235,8 @@ async def _run_one_image(job_id: str) -> None:
                 )
                 cx.commit()
                 return
+            finally:
+                _unstage(staged)
             cx.execute(
                 "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
                 (mid, db.now(), job_id),
@@ -319,48 +381,30 @@ async def _run_one_video(job_id: str) -> None:
         mid = existing_mid
         if not mid:
             aids = params.get("asset_ids") or []
-            src_path = None
-            if aids:
-                rr = cx.execute("SELECT rel_path FROM assets WHERE id=?", (aids[0],)).fetchone()
-                if rr:
-                    cand = ASSETS_DIR / safe_name(rr["rel_path"])
-                    if cand.is_file():
-                        src_path = str(cand.resolve())
-            if not src_path:
+            staged = await _stage_manager_input(job_id, aids[0] if aids else "")
+            if not staged:
                 cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
                            ("immagine di partenza non trovata in libreria", db.now(), job_id))
                 cx.commit()
                 return
-            # Il manager accetta input solo da root fidate (hub uploads, runtimes,
-            # outputs, /tmp): staging in ~/.hermes/hermes-studio-in (root fidata
-            # E scrivibile: la unit ha ReadWritePaths dedicato; /tmp e /opt non
-            # sono scrivibili nel sandbox ProtectSystem=strict). Submit, poi pulizia.
-            from pathlib import Path as _P
-            import shutil as _sh2
-            stage_dir = _P.home() / ".hermes" / "hermes-studio-in"
-            try:
-                stage_dir.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                # Nel sandbox systemd i parent potrebbero non essere elencabili:
-                # la dir viene pre-creata sul host; se manca davvero, fallisce la copy sotto.
-                pass
-            stage = stage_dir / f"hs_{job_id}_in{_P(src_path).suffix.lower() or '.png'}"
-            try:
-                await asyncio.to_thread(_sh2.copy2, src_path, stage)
-            except Exception as e:
-                cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
-                           (f"staging input fallito: {e}", db.now(), job_id))
-                cx.commit()
-                return
             preset = params.get("video_preset") or "journey_video_preview"
+            mparams = {
+                "prompt": prompt_text,
+                "input_images": [staged],
+                "width": int(params.get("width") or 1344),
+                "height": int(params.get("height") or 768),
+                "seed": int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
+            }
+            # Durata solo se richiesta (default manager: ~5s @24fps); il manager
+            # calcola i frame dalla durata, clamp 22..3600.
             try:
-                res = await mgr.submit_video(preset, {
-                    "prompt": prompt_text,
-                    "input_images": [str(stage)],
-                    "width": int(params.get("width") or 1344),
-                    "height": int(params.get("height") or 768),
-                    "seed": int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
-                })
+                _dur = float(params.get("duration") or 0)
+            except (TypeError, ValueError):
+                _dur = 0
+            if _dur > 0:
+                mparams["duration"] = _dur
+            try:
+                res = await mgr.submit_video(preset, mparams)
                 mid = str(res.get("job_id") or res.get("id") or "")
                 if not mid:
                     raise ValueError(f"manager senza job_id: {res}")
@@ -370,10 +414,7 @@ async def _run_one_video(job_id: str) -> None:
                 cx.commit()
                 return
             finally:
-                try:
-                    stage.unlink()
-                except OSError:
-                    pass
+                _unstage(staged)
             cx.execute(
                 "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
                 (mid, db.now(), job_id),
@@ -547,7 +588,8 @@ async def capabilities(_: None = Depends(require_auth)):
                            enabled=True, max_width=2048, max_height=2048,
                            notes="Workflow qwen-t2i v1 (euler/simple, cfg 1.0). Batch via coda."),
             CapabilityTask(task="image-to-image", engine="comfyui", model="qwen-image-2.1-edit",
-                           enabled=False, disabled_reason="edit workflow v1 non ancora validato end-to-end",
+                           enabled=True, max_width=2560, max_height=2560,
+                           notes="Preset manager edit_image (Qwen edit, input staged). Richiede immagine di partenza.",
                            supports_reference=True),
         ],
         video=[
@@ -680,7 +722,8 @@ async def create_job(body: JobCreate, _: None = Depends(require_auth)):
         seed = body.seed if body.seed is not None else random.randint(0, 2**31 - 1)
         params = {"width": w, "height": h, "steps": steps, "seed": seed,
                   "negative_prompt": body.negative_prompt, "style_preset": None,
-                  "asset_ids": body.asset_ids, "video_preset": preset}
+                  "asset_ids": body.asset_ids, "video_preset": preset,
+                  "duration": body.duration}
         task_type = "video"
     else:
         model = body.model or "qwen-image-2.1-UC-Q4_K_M"
@@ -688,9 +731,11 @@ async def create_job(body: JobCreate, _: None = Depends(require_auth)):
         w, h = _norm_wh(body.width, body.height)
         steps = body.steps or 20
         seed = body.seed if body.seed is not None else random.randint(0, 2**31 - 1)
+        edit_mode = bool(body.asset_ids)
         params = {"width": w, "height": h, "steps": steps, "seed": seed,
                   "negative_prompt": body.negative_prompt, "style_preset": body.style_preset,
-                  "asset_ids": body.asset_ids, "image_preset": "create_image"}
+                  "asset_ids": body.asset_ids,
+                  "image_preset": "edit_image" if edit_mode else "create_image"}
         task_type = "image"
     cx = db.connect()
     try:
@@ -823,14 +868,34 @@ async def upload_asset(f: UploadFile = File(...), _: None = Depends(require_auth
         ext = ".webp"
     else:
         raise HTTPException(415, "solo JPEG/PNG/WebP")
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    aid = db.new_id("upl")
-    p = (UPLOADS_DIR / (safe_name(aid) + ext))
-    # Scrittura atomica via .part: niente file troncati visibili.
-    tmp = p.with_suffix(p.suffix + ".part")
+    # Upload indicizzati: diventano subito elementi di libreria (job_id NULL),
+    # usabili come start frame / riferimento. UPLOADS_DIR resta solo per i .part.
+    aid = db.new_id("ast")
+    rel = safe_name(aid) + ext
+    dest = (ASSETS_DIR / rel).resolve()
+    assert str(dest).startswith(str(ASSETS_DIR.resolve())), "path traversal blocked"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
     tmp.write_bytes(data)
-    tmp.replace(p)
-    return {"asset_upload_id": aid, "path": str(p.name), "bytes": len(data)}
+    tmp.replace(dest)
+    w = h = None
+    try:
+        from PIL import Image as _I
+        with _I.open(dest) as _im:
+            w, h = _im.size
+    except Exception:
+        pass
+    cx = db.connect()
+    try:
+        cx.execute(
+            "INSERT INTO assets(id,kind,rel_path,job_id,width,height,created_at) VALUES(?,?,?,?,?,?,?)",
+            (aid, "image", rel, None, w, h, db.now()),
+        )
+        cx.commit()
+    finally:
+        cx.close()
+    await asyncio.to_thread(make_thumb, dest, aid)
+    return {"asset_upload_id": aid, "asset_id": aid, "path": rel, "bytes": len(data)}
 
 
 @app.get("/api/v1/assets", response_model=list[AssetOut])
