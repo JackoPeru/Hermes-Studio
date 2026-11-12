@@ -196,7 +196,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
     var caps by remember { mutableStateOf<Capabilities?>(null) }
     var jobs by remember { mutableStateOf<List<Job>>(emptyList()) }
     var assets by remember { mutableStateOf<List<Asset>>(emptyList()) }
-    var urls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var urls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var err by remember { mutableStateOf<String?>(null) }
     var managerState by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -504,12 +504,13 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
     var prompt by remember(initialPrompt) { mutableStateOf(initialPrompt ?: "") }
     var preset by remember { mutableStateOf("cinematico") }
     var format by remember { mutableStateOf("1:1") }
+    var resolution by remember { mutableStateOf("") }
     var count by remember { mutableStateOf(1) }
     var state by remember { mutableStateOf("Pronto") }
     // Fino a 2 riferimenti (limite reale del template Qwen edit).
     var refIds by remember { mutableStateOf(setOf<String>()) }
     var recent by remember { mutableStateOf<List<Asset>>(emptyList()) }
-    var recentUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var recentUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
 
     val styles = listOf(
@@ -806,9 +807,9 @@ fun DropDownField(label: String, value: String, options: List<String>, onSelect:
 fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (() -> Unit)? = null, showHeader: Boolean = true) {
     val scope = rememberCoroutineScope()
     var images by remember { mutableStateOf<List<Asset>>(emptyList()) }
-    var imgUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var imgUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var recentVideos by remember { mutableStateOf<List<Asset>>(emptyList()) }
-    var videoUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var videoUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var prompt by remember { mutableStateOf("") }
     // Solo 720p/480p: le uniche risoluzioni offerte per H3 (il manager allinea ai multipli di 32).
@@ -1068,7 +1069,7 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
     var assets by remember { mutableStateOf<List<Asset>>(emptyList()) }
     var favIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var projects by remember { mutableStateOf<List<Project>>(emptyList()) }
-    var urls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var urls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var err by remember { mutableStateOf<String?>(null) }
     var showNewProject by remember { mutableStateOf(false) }
     var newProjectName by remember { mutableStateOf("") }
@@ -1761,7 +1762,7 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
     val scope = rememberCoroutineScope()
     var job by remember { mutableStateOf<Job?>(null) }
     var outAssets by remember { mutableStateOf<List<Asset>>(emptyList()) }
-    var outUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var outUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var msg by remember { mutableStateOf("") }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
 

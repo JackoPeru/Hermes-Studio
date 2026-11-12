@@ -564,7 +564,7 @@ async def test_stage_missing_returns_none(client):
 def test_prune_keeps_assets_and_links(client):
     import app.db as dbmod
     aid = _seed_asset(client)
-    jid = _old_job(client, "failed", 40)
+    _old_job(client, "failed", 40)
     cx = dbmod.connect()
     try:
         cx.execute("INSERT INTO favorites(asset_id) VALUES(?)", (aid,))
