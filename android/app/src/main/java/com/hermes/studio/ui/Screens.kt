@@ -468,18 +468,6 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
     var recent by remember { mutableStateOf<List<Asset>>(emptyList()) }
     var recentUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        state = "Caricamento foto…"
-        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val up = repo.uploadImage(uri)
-                refId = up.asset_id.ifBlank { null } ?: up.asset_upload_id
-                refreshRecent()
-                state = "Foto caricata: verrà usata come riferimento."
-            } catch (e: Exception) { state = "Upload fallito: ${e.message}" }
-        }
-    }
 
     val styles = listOf(
         StylePreset("cinematico", "Cinematico", Icons.Filled.Movie),
@@ -520,6 +508,18 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
         } catch (_: Exception) {}
     }
     LaunchedEffect(Unit) { refreshRecent() }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        state = "Caricamento foto…"
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val up = repo.uploadImage(uri)
+                refId = up.asset_id.ifBlank { null } ?: up.asset_upload_id
+                refreshRecent()
+                state = "Foto caricata: verrà usata come riferimento."
+            } catch (e: Exception) { state = "Upload fallito: ${e.message}" }
+        }
+    }
 
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 16.dp).imePadding(),
@@ -686,7 +686,7 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
                     try {
                         val api = repo.api()
                         repeat(count) {
-                            api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, null, null, preset, refs, "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
+                            api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, null, preset, refs, "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
                         }
                         state = (if (isEdit) "Ritocco" else "Generazione") + " in coda (${sel.second}×${sel.third}, $steps passi): segui lo stato in Home."
                         refreshRecent()
