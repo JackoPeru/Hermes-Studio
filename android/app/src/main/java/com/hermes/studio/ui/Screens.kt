@@ -823,6 +823,8 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
     var format by remember { mutableStateOf("16:9 · 720p") }
     // Max start frame reali: 1 per 16:9, 2 per 9:16 (template H3 verificati).
     fun maxRefs(): Int = if (format.startsWith("9:16")) 2 else 1
+    // Al cambio formato pota le selezioni in eccesso: niente 2 start su preset da 1.
+    LaunchedEffect(format) { selectedIds = selectedIds.take(maxRefs()).toSet() }
     var duration by remember { mutableStateOf("5 s") }
     var state by remember { mutableStateOf("Pronto") }
     var capsVideo by remember { mutableStateOf<com.hermes.studio.CapTask?>(null) }
@@ -1130,7 +1132,10 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
     fun reuse(a: Asset) {
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val p = try { a.job_id?.let { repo.api().job(it).prompt } } catch (_: Exception) { null }
-            onReuse(if (p.isNullOrBlank()) "create" else "create?tab=image&prompt=" + Uri.encode(p))
+            // NavController vive sul Main: il salto di thread è obbligatorio.
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                onReuse(if (p.isNullOrBlank()) "create" else "create?tab=image&prompt=" + Uri.encode(p))
+            }
         }
     }
     LaunchedEffect(filter) {
@@ -1579,6 +1584,7 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
     var jobPrompt by remember { mutableStateOf<String?>(null) }
     var promptFull by remember { mutableStateOf(false) }
     var isFav by remember { mutableStateOf(false) }
+    val detailFavMutex = remember { Mutex() }
     var msg by remember { mutableStateOf("") }
     var showDelete by remember { mutableStateOf(false) }
     var showProjects by remember { mutableStateOf(false) }
@@ -1670,7 +1676,10 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
                                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                                     try {
                                         val f = repo.downloadToCache(a)
-                                        ctx.startActivity(android.content.Intent.createChooser(repo.shareFile(f, a.kind), "Condividi"))
+                                        // startActivity dal Main (niente NEW_TASK necessario così).
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                            ctx.startActivity(android.content.Intent.createChooser(repo.shareFile(f, a.kind), "Condividi"))
+                                        }
                                     } catch (e: Exception) { msg = "Condivisione fallita: ${e.message}" }
                                 }
                             })
@@ -1682,7 +1691,10 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
                                 val to = !isFav
                                 isFav = to
                                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                    try { repo.api().favorite(a.id, to) } catch (_: Exception) { isFav = !to }
+                                    // Serializza come in Libreria: niente toggle persi su doppio tap.
+                                    detailFavMutex.withLock {
+                                        try { repo.api().favorite(a.id, to) } catch (_: Exception) { isFav = !to }
+                                    }
                                 }
                             })
                         }
@@ -1716,8 +1728,11 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
             confirmButton = {
                 TextButton(onClick = {
                     scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                        try { repo.deleteAsset(assetId); onDeleted() }
-                        catch (e: Exception) { msg = "Eliminazione fallita: ${e.message}" }
+                        try {
+                            repo.deleteAsset(assetId)
+                            // popBackStack sul Main, come ogni chiamata NavController.
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onDeleted() }
+                        } catch (e: Exception) { msg = "Eliminazione fallita: ${e.message}" }
                     }
                     showDelete = false
                 }) { Text("Elimina", color = Warn) }

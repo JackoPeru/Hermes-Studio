@@ -441,12 +441,14 @@ async def test_recovery_requeues_and_cancels(client):
                 "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,comfy_prompt_id,created_at,updated_at)"
                 " VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (jid, "image", st, "e", "m", "p", "{}",
-                 "mid-x" if jid == "rec-run-mid" else None, dbmod.now(), dbmod.now()))
+                 "mid-orphan" if jid == "rec-canc" else ("mid-x" if jid == "rec-run-mid" else None),
+                 dbmod.now(), dbmod.now()))
         cx.commit()
     finally:
         cx.close()
     out = await m._recover_once()
-    assert out == {"requeued": 3, "cancelled": 1}
+    assert out["requeued"] == 3 and out["cancelled"] == 1
+    assert out["cancel_mids"] == ["mid-orphan"]
     cx = dbmod.connect()
     try:
         got = {r[0]: r[1] for r in cx.execute("SELECT id,status FROM jobs WHERE id LIKE 'rec-%'").fetchall()}

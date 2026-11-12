@@ -71,6 +71,8 @@ data class Job(
     val height: Int? = null,
     val steps: Int? = null,
     val seed: Long? = null,
+    val duration: Double? = null,
+    val asset_ids: List<String> = emptyList(),
     val comfy_prompt_id: String? = null,
     val progress: Double? = null,
     val error: String? = null,

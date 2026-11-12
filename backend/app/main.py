@@ -58,7 +58,8 @@ async def _recover_once() -> dict:
     """Rimette in carreggiata i job interrotti (restart/crash).
 
     preparing/running -> queued (reconcile via existing_mid, mai doppi submit);
-    cancelling -> cancelled. Ritorna i conteggi per log/test.
+    cancelling -> cancelled (+ cancel propagato al manager per non lasciare
+    orfani su GPU). Ritorna conteggi e mid da cancellare per log/test.
     """
     cx = db.connect()
     try:
@@ -66,12 +67,15 @@ async def _recover_once() -> dict:
             "UPDATE jobs SET status='queued', updated_at=? WHERE status IN ('preparing','running')",
             (db.now(),),
         ).rowcount
+        mids = [r[0] for r in cx.execute(
+            "SELECT comfy_prompt_id FROM jobs WHERE status='cancelling'").fetchall()
+            if r[0]]
         n2 = cx.execute(
             "UPDATE jobs SET status='cancelled', updated_at=? WHERE status='cancelling'",
             (db.now(),),
         ).rowcount
         cx.commit()
-        return {"requeued": n1, "cancelled": n2}
+        return {"requeued": n1, "cancelled": n2, "cancel_mids": mids}
     finally:
         cx.close()
 
@@ -90,6 +94,11 @@ async def _dispatch_loop() -> None:
     if counts["requeued"] or counts["cancelled"]:
         _log.info("recovery: %d requeued, %d cancelled",
                   counts["requeued"], counts["cancelled"])
+    for mid in counts.get("cancel_mids", []):
+        try:
+            await _manager().cancel_job(mid)
+        except Exception as e:
+            _log.warning("recovery: cancel manager %s fallita: %s", mid, e)
     while not _stop.is_set():
         cx = db.connect()
         try:
@@ -158,7 +167,8 @@ async def _stage_manager_input(job_id: str, asset_id: str, tag: str = "") -> str
     if not rr:
         return None
     cand = ASSETS_DIR / safe_name(rr["rel_path"])
-    if not cand.is_file():
+    # Niente symlink in staging: come download/thumb, solo file reali.
+    if not cand.is_file() or cand.is_symlink():
         return None
     stage_dir = _P.home() / ".hermes" / "hermes-studio-in"
     try:
@@ -323,9 +333,12 @@ async def _run_one_image(job_id: str) -> None:
             cx.execute("UPDATE jobs SET progress=MAX(COALESCE(progress,0),0.1), updated_at=? WHERE id=?",
                        (db.now(), job_id))
             cx.commit()
-        cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+        cur = cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=? AND status IN ('running','preparing')",
                    ("timeout attesa manager image", db.now(), job_id))
         cx.commit()
+        if cur.rowcount == 0:
+            cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?", (db.now(), job_id))
+            cx.commit()
     finally:
         try:
             cx.close()
@@ -383,11 +396,17 @@ async def _finish_image_job(cx, job_id: str, st: dict) -> None:
     except Exception:
         pass
     await asyncio.to_thread(make_thumb, dest, aid)
-    cx.execute(
-        "UPDATE jobs SET status='completed', progress=1.0, outputs=?, updated_at=? WHERE id=?",
+    # Terminale condizionale: un cancel arrivato mentre si copiava vince sul done.
+    cur = cx.execute(
+        "UPDATE jobs SET status='completed', progress=1.0, outputs=?, updated_at=? "
+        "WHERE id=? AND status IN ('running','preparing')",
         (json.dumps([aid]), db.now(), job_id),
     )
     cx.commit()
+    if cur.rowcount == 0:
+        cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+                   (db.now(), job_id))
+        cx.commit()
 
 
 async def _run_one_video(job_id: str) -> None:
@@ -523,9 +542,12 @@ async def _run_one_video(job_id: str) -> None:
             cx.execute("UPDATE jobs SET progress=MAX(COALESCE(progress,0),0.1), updated_at=? WHERE id=?",
                        (db.now(), job_id))
             cx.commit()
-        cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+        cur = cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=? AND status IN ('running','preparing')",
                    ("timeout attesa manager video", db.now(), job_id))
         cx.commit()
+        if cur.rowcount == 0:
+            cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?", (db.now(), job_id))
+            cx.commit()
     finally:
         try:
             cx.close()
@@ -616,11 +638,17 @@ async def _finish_video_job(cx, job_id: str, st: dict) -> None:
     cx.commit()
     th = await asyncio.to_thread(video_thumb, dest, aid)
     _ = th
-    cx.execute(
-        "UPDATE jobs SET status='completed', progress=1.0, outputs=?, updated_at=? WHERE id=?",
+    # Terminale condizionale: un cancel arrivato durante copia/ffmpeg vince sul done.
+    cur = cx.execute(
+        "UPDATE jobs SET status='completed', progress=1.0, outputs=?, updated_at=? "
+        "WHERE id=? AND status IN ('running','preparing')",
         (json.dumps([aid]), db.now(), job_id),
     )
     cx.commit()
+    if cur.rowcount == 0:
+        cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+                   (db.now(), job_id))
+        cx.commit()
 
 
 @asynccontextmanager
@@ -703,7 +731,7 @@ async def status(_: None = Depends(require_auth)):
         out["manager_desired"] = ""
     cx = db.connect()
     try:
-        q = cx.execute("SELECT COUNT(*) c FROM jobs WHERE status IN ('queued','preparing','running')").fetchone()
+        q = cx.execute("SELECT COUNT(*) c FROM jobs WHERE status IN ('queued','preparing','running','cancelling')").fetchone()
         out["queue_length"] = q["c"]
         import shutil
         du = shutil.disk_usage(str(DATA_DIR))
@@ -959,7 +987,8 @@ async def upload_asset(f: UploadFile = File(...), _: None = Depends(require_auth
                 if len(head) < 16:
                     head = (head + chunk)[:16]
                 fh.write(chunk)
-    except HTTPException:
+    except Exception:
+        # Qualsiasi errore (413, OSError disco, client drop): niente .part orfani.
         try:
             staging.unlink()
         except OSError:

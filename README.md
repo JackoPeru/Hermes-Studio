@@ -6,7 +6,7 @@ App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per g
 - `backend/` FastAPI `/api/v1/*` (jobs persistenti SQLite WAL, ComfyUIAdapter, coda seriale, SSE, assets+thumbs, progetti/preferiti).
 - `android/` app nativa: Home, Crea unificata (immagine/video con selettore), Libreria, Impostazioni (pairing + GPU live + **auto-update in-app**). Nessuna WebView.
 - `docs/DISCOVERY.md` ricognizione reale, `docs/API.md` contratto, `docs/PAIRING.md` pairing Tailscale, `docs/RUNBOOK.md` operativo, `docs/UPDATE.md` auto-update, `docs/VIDEO_H3.md` pipeline video verificata.
-- `tests/test_backend.py` 17 test verdi. `.env.example` per tutte le env.
+- `tests/test_backend.py` 29 test verdi (recovery, cancel, race, auth, prune, staging, enqueue). `.env.example` per tutte le env.
 
 ## V2 (superata: il ritocco era disabilitato, ora in V3; vale il resto)
 - Dettaglio job (tap in coda: stato/progresso reali, output, annulla, riusa) e dettaglio asset (player video in-app, scarica in galleria, condividi, preferito, assegna a progetto, riusa, elimina, fullscreen con zoom per le immagini).
@@ -45,10 +45,10 @@ ruff check backend tests
 ## App
 Apri `android/` in Android Studio (se manca il wrapper: `gradle wrapper`), imposta backend+token in Impostazioni, build `assembleDebug`. La coda sopravvive a chiusura app (stato dal server). Build con firma stabile + auto-update in-app: vedi `docs/UPDATE.md` + workflow `Build And Publish Release APK` (feed `updates/latest.json` nella stessa repo).
 
-## Limiti V2 onesti
-- Video = solo image-to-video H3 turbo (~5s): 16:9/9:16 in 720p o 480p, start frame obbligatorio dalla libreria. Text-to-video: nessun preset nel manager (solo template grezzo mai validato) → non offerto.
-- Immagini: tier 2K / Full HD / HD / 480p per formato (max reale 2560×1440: tetto manager alzato solo per gli still, video invariato), passi Bozza 12 / Alta 20 / Ultra 28.
-- Edit/reference Qwen: pipeline non validata end-to-end → UI disabilitata.
-- Niente ETA inventate: stato + step; progresso reale solo quando Comfy/manager lo riportano.
+## Limiti onesti (V3)
+- Video = solo image-to-video H3 turbo (durate 3/5/8s): 16:9/9:16 in 720p o 480p, start frame obbligatorio dalla libreria (16:9 uno, 9:16 fino a due). Text-to-video: nessun preset nel manager (solo template grezzo mai validato) → non offerto.
+- Immagini: tier 2K / Full HD / HD / 480p per formato (max reale 2560×1440), passi fissi 20 (la qualità si sceglie con la risoluzione).
+- Edit/reference Qwen: verificato con render reale (max 2 riferimenti, limite del template edit).
+- Niente ETA inventate: stato + step; progresso reale solo quando il manager lo riporta.
 - Concorrenza 1 job (VRAM reale); coordinamento via GPU-manager, mai kill/reset.
 - Auto-update in-app firmato dal feed `updates/latest.json` (`docs/UPDATE.md`).

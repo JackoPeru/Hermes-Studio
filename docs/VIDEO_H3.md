@@ -30,8 +30,9 @@ Tutto sotto è rilevato via SSH read-only su `hermes`, non ipotizzato.
 ## Note operative
 - Auth verso il manager con ruolo app (`app.key`, mai full-control): submit verificato
   in 3ms su preset inesistente (400 atteso, nessun job creato), `/status` studio in 0.78s.
-- Durata fissa ~5s (default `length` 124 @24fps del preset turbo): nessuna opzione
-  durata finché combinazioni diverse non saranno validate con render reali.
+- Durate 3/5/8s via `duration` (2..10s accettati dal backend, l'app offre i tre
+  tier verificati): il preset turbo scala `length` dai frame; render reale 8s
+  verificato (7.86s misurati). Default ~5s se non specificata.
 - Camera motion (Dolly/Pan/Loop): solo suggerimenti testuali appesi al prompt —
   il preset non ha parametri camera strutturali.
 - Lo start frame deve stare in una root fidata del manager (`~/.hermes`,

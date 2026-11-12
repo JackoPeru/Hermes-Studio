@@ -75,10 +75,10 @@ interface StudioApi {
     @POST("api/v1/assets/upload")
     suspend fun upload(@Part file: MultipartBody.Part): UploadOut
     @POST("api/v1/assets/{id}/favorite")
-    suspend fun favorite(@Path("id") id: String, @Query("on") on: Boolean = true): ResponseBody
+    suspend fun favorite(@Path("id") id: String, @Query("on") on: Boolean = true)
     @POST("api/v1/projects/{pid}/assets/{aid}")
-    suspend fun addToProject(@Path("pid") pid: String, @Path("aid") aid: String): ResponseBody
-    @DELETE("api/v1/assets/{id}") suspend fun deleteAsset(@Path("id") id: String): ResponseBody
+    suspend fun addToProject(@Path("pid") pid: String, @Path("aid") aid: String)
+    @DELETE("api/v1/assets/{id}") suspend fun deleteAsset(@Path("id") id: String)
     @POST("api/v1/maintenance/prune") suspend fun prune(@Body b: PruneBody): PruneOut
     @GET("api/v1/projects") suspend fun projects(): List<Project>
     @POST("api/v1/projects") suspend fun createProject(@Body b: ProjectCreate): Project
@@ -168,12 +168,13 @@ class StudioRepo(private val ctx: Context) {
     /** Upload foto dal telefono (Photo Picker): diventa subito elemento di libreria. */
     suspend fun uploadImage(uri: Uri): UploadOut = withContext(Dispatchers.IO) {
         val resolver = ctx.contentResolver
-        val mime = resolver.getType(uri) ?: "image/jpeg"
-        if (!mime.startsWith("image/")) throw IllegalStateException("Solo immagini (JPEG/PNG/WebP)")
+        val mime = (resolver.getType(uri) ?: "").lowercase()
+        // Solo ciò che il backend accetta (sniff JPEG/PNG/WebP): niente heic/gif etichettati male.
         val ext = when {
-            mime.contains("png", true) -> ".png"
-            mime.contains("webp", true) -> ".webp"
-            else -> ".jpg"
+            mime.contains("jpeg") || mime == "image/jpg" -> ".jpg"
+            mime == "image/png" -> ".png"
+            mime == "image/webp" -> ".webp"
+            else -> throw IllegalStateException("Solo JPEG/PNG/WebP")
         }
         val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalStateException("File non leggibile")
@@ -217,13 +218,18 @@ class StudioRepo(private val ctx: Context) {
                 a.kind == "video" -> ".mp4"
                 else -> ".jpg"
             }
-            r.body!!.byteStream().use { input ->
+            val body = r.body ?: throw IllegalStateException("Risposta vuota")
+            body.byteStream().use { input ->
                 tmp.outputStream().use { input.copyTo(it) }
             }
         }
         val out = java.io.File(dir, a.id + ext)
         if (out.exists()) out.delete()
-        tmp.renameTo(out)
+        if (!tmp.renameTo(out)) {
+            // renameTo può fallire: fallback copia (stessi permessi cache).
+            tmp.copyTo(out, overwrite = true)
+            tmp.delete()
+        }
         out
     }
 
@@ -239,8 +245,17 @@ class StudioRepo(private val ctx: Context) {
     /** Salva in Galleria via MediaStore. Ritorna Uri di sistema. */
     suspend fun saveToGallery(a: Asset): Uri = withContext(Dispatchers.IO) {
         val file = downloadToCache(a)
+        // Estensione/MIME veri dal file scaricato, non presunti dal kind.
+        val ext = "." + file.extension.ifBlank { if (a.kind == "video") "mp4" else "jpg" }
+        val mime = when (ext.lowercase()) {
+            ".png" -> "image/png"
+            ".webp" -> "image/webp"
+            ".mp4" -> "video/mp4"
+            ".webm" -> "video/webm"
+            else -> if (a.kind == "video") "video/*" else "image/jpeg"
+        }
+        val isVideo = mime.startsWith("video/")
         val resolver = ctx.contentResolver
-        val isVideo = a.kind == "video"
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             if (isVideo) MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
             else MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -249,8 +264,8 @@ class StudioRepo(private val ctx: Context) {
             else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         }
         val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "hermes_${a.id}${if (isVideo) ".mp4" else ".jpg"}")
-            put(MediaStore.MediaColumns.MIME_TYPE, if (isVideo) "video/mp4" else "image/jpeg")
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "hermes_${a.id}$ext")
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, if (isVideo) "Movies/HermesStudio" else "Pictures/HermesStudio")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
