@@ -129,11 +129,13 @@ async def _run_one(job_id: str) -> None:
         await _run_one_image(job_id)
 
 
-async def _stage_manager_input(job_id: str, asset_id: str) -> str | None:
+async def _stage_manager_input(job_id: str, asset_id: str, tag: str = "") -> str | None:
     """Copia un asset libreria nella staging fidata dal manager.
 
     Ritorna il path assoluto o None (asset mancante/file illeggibile/staging
     impossibile). Il chiamante cancella il file dopo il submit accettato.
+    Il manager mappa INPUT_IMAGE_{n} in ordine di lista (max 4, i template
+    reali ne usano 1-2: Qwen edit 2, H3 16:9 uno, H3 9:16 due).
     """
     from pathlib import Path as _P
     import shutil as _sh
@@ -152,7 +154,7 @@ async def _stage_manager_input(job_id: str, asset_id: str) -> str | None:
         stage_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
-    stage = stage_dir / f"hs_{job_id}_in{cand.suffix.lower() or '.png'}"
+    stage = stage_dir / f"hs_{job_id}_in{tag}{cand.suffix.lower() or '.png'}"
     try:
         await asyncio.to_thread(_sh.copy2, str(cand.resolve()), stage)
     except OSError:
@@ -208,21 +210,24 @@ async def _run_one_image(job_id: str) -> None:
                 "seed": int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
                 "steps": int(params.get("steps") or 20),
             }
-            staged = None
+            staged: list[str] = []
             if preset == "edit_image":
-                aids = params.get("asset_ids") or []
+                aids = (params.get("asset_ids") or [])[:4]
                 if not aids:
                     cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
-                               ("edit richiede asset_ids con immagine di partenza", db.now(), job_id))
+                               ("edit richiede asset_ids con almeno 1 immagine di partenza", db.now(), job_id))
                     cx.commit()
                     return
-                staged = await _stage_manager_input(job_id, aids[0])
+                for i, aid_in in enumerate(aids):
+                    p = await _stage_manager_input(job_id, aid_in, str(i + 1))
+                    if p:
+                        staged.append(p)
                 if not staged:
                     cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
-                               ("immagine di partenza non trovata in libreria", db.now(), job_id))
+                               ("immagini di partenza non trovate in libreria", db.now(), job_id))
                     cx.commit()
                     return
-                submit_params["input_images"] = [staged]
+                submit_params = {**submit_params, "input_images": staged}
             try:
                 res = await mgr.submit_image(preset, submit_params)
                 mid = str(res.get("job_id") or res.get("id") or "")
@@ -236,7 +241,8 @@ async def _run_one_image(job_id: str) -> None:
                 cx.commit()
                 return
             finally:
-                _unstage(staged)
+                for _s in staged:
+                    _unstage(_s)
             cx.execute(
                 "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
                 (mid, db.now(), job_id),
@@ -380,8 +386,12 @@ async def _run_one_video(job_id: str) -> None:
         mgr = _manager()
         mid = existing_mid
         if not mid:
-            aids = params.get("asset_ids") or []
-            staged = await _stage_manager_input(job_id, aids[0] if aids else "")
+            aids = (params.get("asset_ids") or [])[:4]
+            staged: list[str] = []
+            for i, aid_in in enumerate(aids):
+                p = await _stage_manager_input(job_id, aid_in, str(i + 1))
+                if p:
+                    staged.append(p)
             if not staged:
                 cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
                            ("immagine di partenza non trovata in libreria", db.now(), job_id))
@@ -390,7 +400,7 @@ async def _run_one_video(job_id: str) -> None:
             preset = params.get("video_preset") or "journey_video_preview"
             mparams = {
                 "prompt": prompt_text,
-                "input_images": [staged],
+                "input_images": staged,
                 "width": int(params.get("width") or 1344),
                 "height": int(params.get("height") or 768),
                 "seed": int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
@@ -414,7 +424,8 @@ async def _run_one_video(job_id: str) -> None:
                 cx.commit()
                 return
             finally:
-                _unstage(staged)
+                for _s in staged:
+                    _unstage(_s)
             cx.execute(
                 "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
                 (mid, db.now(), job_id),

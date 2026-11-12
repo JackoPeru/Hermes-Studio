@@ -230,6 +230,7 @@ async def test_video_worker_done_path(client, tmp_path, monkeypatch):
     mp4 = tmp_path / "clip.mp4"
     mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"0" * 2048)
     aid = _seed_asset(client)
+    aid2 = _seed_asset(client)
     jid = dbmod.new_id("job")
     cx = dbmod.connect()
     try:
@@ -237,15 +238,18 @@ async def test_video_worker_done_path(client, tmp_path, monkeypatch):
             "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,created_at,updated_at)"
             " VALUES(?,?,?,?,?,?,?,?,?)",
             (jid, "video", "queued", "comfyui", "minimax-h3-turbo-4step", "onde",
-             json.dumps({"width": 1344, "height": 768, "steps": 4, "seed": 1,
-                         "asset_ids": [aid], "video_preset": "journey_video_preview"}),
+             json.dumps({"width": 768, "height": 1344, "steps": 4, "seed": 1,
+                         "asset_ids": [aid, aid2], "video_preset": "journey_video_preview_chained"}),
              dbmod.now(), dbmod.now()))
         cx.commit()
     finally:
         cx.close()
+    seen = {}
     class FakeMgr:
         async def submit_video(self, preset, params):
-            assert params["input_images"] and params["input_images"][0].endswith(".png")
+            seen.update(preset=preset, params=params)
+            assert len(params["input_images"]) == 2
+            assert all(p.endswith(".png") for p in params["input_images"])
             return {"job_id": "mid9", "status": "queued", "preset": preset}
         async def get_job(self, mid):
             assert mid == "mid9"
@@ -258,6 +262,7 @@ async def test_video_worker_done_path(client, tmp_path, monkeypatch):
         return None
     monkeypatch.setattr(_aio, "sleep", no_sleep)
     await m._run_one_video(jid)
+    assert seen["preset"] == "journey_video_preview_chained"
     cx = dbmod.connect()
     try:
         row = cx.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
@@ -327,6 +332,56 @@ async def test_image_worker_done_path(client, tmp_path, monkeypatch):
     import app.config as cfg
     assert (cfg.ASSETS_DIR / rel).is_file()
     assert (cfg.THUMBS_DIR / (outs[0] + ".jpg")).is_file()
+
+@pytest.mark.asyncio
+async def test_image_edit_two_refs(client, tmp_path, monkeypatch):
+    # Ritocco con 2 riferimenti: preset edit_image + entrambi staged.
+    import asyncio as _aio
+    import app.db as dbmod
+    import app.main as m
+    from PIL import Image
+    png = tmp_path / "out.png"
+    Image.new("RGB", (320, 240), "green").save(png)
+    aid1 = _seed_asset(client)
+    aid2 = _seed_asset(client)
+    jid = dbmod.new_id("job")
+    cx = dbmod.connect()
+    try:
+        cx.execute(
+            "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (jid, "image", "queued", "comfyui", "qwen-image-2.1-UC-Q4_K_M", "piu cupo",
+             json.dumps({"width": 768, "height": 768, "steps": 12, "seed": 3,
+                         "asset_ids": [aid1, aid2], "image_preset": "edit_image"}),
+             dbmod.now(), dbmod.now()))
+        cx.commit()
+    finally:
+        cx.close()
+    seen = {}
+    class FakeMgr:
+        async def submit_image(self, preset, params):
+            seen.update(preset=preset, params=params)
+            assert preset == "edit_image"
+            assert len(params["input_images"]) == 2
+            return {"job_id": "mid7", "status": "queued", "preset": preset}
+        async def get_job(self, mid):
+            assert mid == "mid7"
+            return {"job_id": mid, "status": "done", "progress": 1.0,
+                    "result_paths": [str(png)], "error": ""}
+        async def cancel_job(self, mid):
+            return {"job_id": mid, "status": "cancelled"}
+    monkeypatch.setattr(m, "_manager", lambda: FakeMgr())
+    async def no_sleep(*a, **k):
+        return None
+    monkeypatch.setattr(_aio, "sleep", no_sleep)
+    await m._run_one_image(jid)
+    assert seen["preset"] == "edit_image"
+    cx = dbmod.connect()
+    try:
+        row = cx.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+        assert row["status"] == "completed", row["error"]
+    finally:
+        cx.close()
 
 def _old_job(client, status, days_ago, with_asset=False):
     import app.db as dbmod

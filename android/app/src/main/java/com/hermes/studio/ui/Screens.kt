@@ -230,7 +230,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
     }
     suspend fun reuse(a: Asset, go: (String) -> Unit) {
         val p = try { a.job_id?.let { repo.api().job(it).prompt } } catch (_: Exception) { null }
-        go(if (p.isNullOrBlank()) "create" else "create?prompt=" + Uri.encode(p))
+        go(if (p.isNullOrBlank()) "create" else "create?tab=image&prompt=" + Uri.encode(p))
     }
     var live by remember { mutableStateOf(false) }
     var lastEventAt by remember { mutableStateOf(0L) }
@@ -304,7 +304,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
                             GradientButton("Genera immagine", Icons.Filled.Image, onClick = { onNav("create") })
                         }
                         Box(Modifier.weight(1f)) {
-                            GradientButton("Crea video", Icons.Filled.Videocam, onClick = { onNav("video") }, blue = true)
+                            GradientButton("Crea video", Icons.Filled.Videocam, onClick = { onNav("create?tab=video") }, blue = true)
                         }
                     }
                 }
@@ -450,12 +450,47 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
     }
 }
 
+// ---------- Crea unificata (selettore Immagine/Video in top) ----------
+
+@Composable
+fun CreateScreen(
+    repo: StudioRepo,
+    initialTab: String? = null,
+    initialPrompt: String? = null,
+    onOpenAsset: (String) -> Unit
+) {
+    var tab by rememberSaveable(initialTab) { mutableStateOf(if (initialTab == "video") 1 else 0) }
+    Column(Modifier.fillMaxSize()) {
+        SingleChoiceSegmentedButtonRow(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)
+        ) {
+            SegmentedButton(
+                selected = tab == 0, onClick = { tab = 0 },
+                shape = SegmentedButtonDefaults.itemShape(0, 2),
+                icon = { Icon(Icons.Filled.Image, null, modifier = Modifier.size(18.dp)) },
+                label = { Text("Immagine") }
+            )
+            SegmentedButton(
+                selected = tab == 1, onClick = { tab = 1 },
+                shape = SegmentedButtonDefaults.itemShape(1, 2),
+                icon = { Icon(Icons.Filled.Videocam, null, modifier = Modifier.size(18.dp)) },
+                label = { Text("Video") }
+            )
+        }
+        if (tab == 0) {
+            CreateImageScreen(repo, initialPrompt = initialPrompt, showHeader = false)
+        } else {
+            CreateVideoScreen(repo, onOpenAsset = onOpenAsset, showHeader = false)
+        }
+    }
+}
+
 // ---------- Genera immagine (mockup 02) ----------
 
 data class StylePreset(val key: String, val label: String, val icon: ImageVector)
 
 @Composable
-fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (() -> Unit)? = null) {
+fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (() -> Unit)? = null, showHeader: Boolean = true) {
     val scope = rememberCoroutineScope()
     var prompt by remember(initialPrompt) { mutableStateOf(initialPrompt ?: "") }
     var preset by remember { mutableStateOf("cinematico") }
@@ -464,7 +499,8 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
     var resolution by remember { mutableStateOf("Alta") }
     var count by remember { mutableStateOf(1) }
     var state by remember { mutableStateOf("Pronto") }
-    var refId by remember { mutableStateOf<String?>(null) }
+    // Fino a 2 riferimenti (limite reale del template Qwen edit).
+    var refIds by remember { mutableStateOf(setOf<String>()) }
     var recent by remember { mutableStateOf<List<Asset>>(emptyList()) }
     var recentUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
@@ -514,9 +550,14 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val up = repo.uploadImage(uri)
-                refId = up.asset_id.ifBlank { null } ?: up.asset_upload_id
+                val id = up.asset_id.ifBlank { null } ?: up.asset_upload_id
+                if (refIds.size >= 2 && !refIds.contains(id)) {
+                    state = "Max 2 riferimenti: deselezionane uno prima."
+                } else {
+                    refIds = refIds + id
+                    state = "Foto caricata: verrà usata come riferimento."
+                }
                 refreshRecent()
-                state = "Foto caricata: verrà usata come riferimento."
             } catch (e: Exception) { state = "Upload fallito: ${e.message}" }
         }
     }
@@ -526,10 +567,12 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)
     ) {
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Genera immagine", fontWeight = FontWeight.Bold, fontSize = 28.sp)
-                Text("Crea immagini con l'AI a partire da una descrizione.", color = Muted, fontSize = 14.sp)
+        if (showHeader) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Genera immagine", fontWeight = FontWeight.Bold, fontSize = 28.sp)
+                    Text("Crea immagini con l'AI a partire da una descrizione.", color = Muted, fontSize = 14.sp)
+                }
             }
         }
         item {
@@ -600,16 +643,17 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, CardBorder)) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Immagine di riferimento (opzionale)", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (refId != null) {
-                            TextButton(onClick = { refId = null }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                        Text("Immagini di riferimento (opzionale)", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${refIds.size}/2", color = Muted, fontSize = 13.sp)
+                        if (refIds.isNotEmpty()) {
+                            TextButton(onClick = { refIds = emptySet() }, contentPadding = PaddingValues(horizontal = 4.dp)) {
                                 Text("Rimuovi", color = Warn, fontSize = 13.sp)
                             }
                         }
                     }
                     Text(
-                        if (refId == null) "Con un riferimento, il job diventa ritocco (preset edit Qwen)."
-                        else "Ritocco attivo: descrivi la modifica nel prompt.",
+                        if (refIds.isEmpty()) "Con riferimenti, il job diventa ritocco (preset edit Qwen, max 2)."
+                        else "Ritocco attivo (${refIds.size}): descrivi la modifica nel prompt.",
                         color = Muted, fontSize = 13.sp
                     )
                     Spacer(Modifier.height(6.dp))
@@ -632,11 +676,15 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
                         }
                         items(recent, key = { it.id }) { a ->
                             val req = rememberImgReq(recentUrls[a.id], loader)
-                            val sel = refId == a.id
+                            val sel = refIds.contains(a.id)
                             Surface(
                                 shape = RoundedCornerShape(12.dp), color = Card,
                                 border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
-                                onClick = { refId = if (sel) null else a.id }
+                                onClick = {
+                                    refIds = if (sel) refIds - a.id
+                                    else if (refIds.size >= 2) refIds
+                                    else refIds + a.id
+                                }
                             ) {
                                 Box(Modifier.size(104.dp, 118.dp)) {
                                     if (req != null && loader != null) {
@@ -675,12 +723,12 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             }
         }
         item {
-            val isEdit = refId != null
+            val isEdit = refIds.isNotEmpty()
             GradientButton(if (isEdit) "Ritocca immagine" else "Genera immagine", Icons.Filled.AutoAwesome, enabled = prompt.isNotBlank(), onClick = {
                 val opts = resOptions(format)
                 val sel = opts.firstOrNull { it.first == resolution } ?: opts.first()
                 val steps = stepsFor[quality] ?: 20
-                val refs = refId?.let { listOf(it) } ?: emptyList()
+                val refs = refIds.toList()
                 state = "Accodamento…"
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
@@ -748,13 +796,13 @@ fun DropDownField(label: String, value: String, options: List<String>, onSelect:
 // ---------- Crea video (mockup 03, image-to-video H3 turbo) ----------
 
 @Composable
-fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (() -> Unit)? = null) {
+fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (() -> Unit)? = null, showHeader: Boolean = true) {
     val scope = rememberCoroutineScope()
     var images by remember { mutableStateOf<List<Asset>>(emptyList()) }
     var imgUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var recentVideos by remember { mutableStateOf<List<Asset>>(emptyList()) }
     var videoUrls by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    var selectedId by remember { mutableStateOf<String?>(null) }
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var prompt by remember { mutableStateOf("") }
     // Solo 720p/480p: le uniche risoluzioni offerte per H3 (il manager allinea ai multipli di 32).
     val videoFormats = mapOf(
@@ -764,6 +812,8 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         "9:16 · 480p" to (480 to 854)
     )
     var format by remember { mutableStateOf("16:9 · 720p") }
+    // Max start frame reali: 1 per 16:9, 2 per 9:16 (template H3 verificati).
+    fun maxRefs(): Int = if (format.startsWith("9:16")) 2 else 1
     var duration by remember { mutableStateOf("5 s") }
     var state by remember { mutableStateOf("Pronto") }
     var capsVideo by remember { mutableStateOf<com.hermes.studio.CapTask?>(null) }
@@ -788,38 +838,81 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             val vids = api.assets("video").take(6)
             recentVideos = vids
             videoUrls = vids.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
-            if (selectedId != null && imgs.none { it.id == selectedId }) selectedId = null
+            selectedIds = selectedIds.filter { id -> imgs.any { it.id == id } }.take(maxRefs()).toSet()
         } catch (_: Exception) {}
     }
     LaunchedEffect(Unit) { refresh() }
+    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        state = "Caricamento foto…"
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val up = repo.uploadImage(uri)
+                val id = up.asset_id.ifBlank { null } ?: up.asset_upload_id
+                if (selectedIds.size >= maxRefs() && !selectedIds.contains(id)) {
+                    state = "Max ${maxRefs()} start frame: deselezionane uno prima."
+                } else {
+                    selectedIds = selectedIds + id
+                    state = "Foto caricata e selezionata."
+                }
+                refresh()
+            } catch (e: Exception) { state = "Upload fallito: ${e.message}" }
+        }
+    }
 
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp).imePadding(),
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)
     ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Videocam, null, tint = AccentV, modifier = Modifier.size(30.dp))
-                Spacer(Modifier.width(10.dp))
-                Text("Crea video", fontWeight = FontWeight.Bold, fontSize = 28.sp)
+        if (showHeader) {
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Videocam, null, tint = AccentV, modifier = Modifier.size(30.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text("Crea video", fontWeight = FontWeight.Bold, fontSize = 28.sp)
+                }
+                Text("Anima un'immagine con l'AI, in modo semplice e veloce.", color = Muted, fontSize = 14.sp)
             }
-            Text("Anima un'immagine con l'AI, in modo semplice e veloce.", color = Muted, fontSize = 14.sp)
         }
         item {
-            SectionHeader(Icons.Filled.Image, "Immagine di partenza")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionHeader(Icons.Filled.Image, "Immagine di partenza")
+                Spacer(Modifier.weight(1f))
+                Text("${selectedIds.size}/${maxRefs()}", color = Muted, fontSize = 13.sp)
+            }
             Spacer(Modifier.height(10.dp))
             if (images.isEmpty()) {
-                Text("Nessuna immagine in libreria: genera prima un'immagine.", color = Muted, fontSize = 13.sp)
+                Text("Nessuna immagine in libreria: genera o carica prima un'immagine.", color = Muted, fontSize = 13.sp)
             } else {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp), color = Color.Transparent,
+                            border = BorderStroke(1.dp, AccentB.copy(alpha = 0.6f)),
+                            onClick = { videoPicker.launch("image/*") }
+                        ) {
+                            Column(
+                                Modifier.size(130.dp, 150.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(Icons.Filled.AddPhotoAlternate, null, tint = AccentB, modifier = Modifier.size(26.dp))
+                                Text("Carica foto", color = AccentB, fontSize = 12.sp)
+                            }
+                        }
+                    }
                     items(images, key = { it.id }) { a ->
                         val req = rememberImgReq(imgUrls[a.id], loader)
-                        val sel = selectedId == a.id
+                        val sel = selectedIds.contains(a.id)
                         Surface(
                             shape = RoundedCornerShape(14.dp), color = Card,
                             border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
-                            onClick = { selectedId = a.id }
+                            onClick = {
+                                selectedIds = if (sel) selectedIds - a.id
+                                else if (selectedIds.size >= maxRefs()) selectedIds
+                                else selectedIds + a.id
+                            }
                         ) {
                             Box(Modifier.size(130.dp, 150.dp)) {
                                 if (req != null && loader != null) {
@@ -905,15 +998,16 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         item {
             val dims = videoFormats[format] ?: (1280 to 720)
             val durSecs = duration.substringBefore(" ").toDoubleOrNull() ?: 5.0
-            GradientButton("Avvia rendering", Icons.Filled.PlayArrow, enabled = selectedId != null && prompt.isNotBlank(), onClick = {
-                val sid = selectedId ?: return@GradientButton
+            val sids = selectedIds.toList()
+            GradientButton("Avvia rendering", Icons.Filled.PlayArrow, enabled = sids.isNotEmpty() && prompt.isNotBlank(), onClick = {
+                if (sids.isEmpty()) return@GradientButton
                 state = "Accodamento…"
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         repo.api().createJob(
-                            JobCreate("video", prompt, null, "minimax-h3-turbo-4step", null, dims.first, dims.second, 4, null, durSecs, null, listOf(sid), "app-v-${System.currentTimeMillis()}-${prompt.hashCode()}")
+                            JobCreate("video", prompt, null, "minimax-h3-turbo-4step", null, dims.first, dims.second, 4, null, durSecs, null, sids, "app-v-${System.currentTimeMillis()}-${prompt.hashCode()}")
                         )
-                        state = "Inserito in coda (~${durSecs.toInt()} s): segui lo stato in Home."
+                        state = "Inserito in coda (~${durSecs.toInt()} s, ${sids.size} start): segui lo stato in Home."
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
                 }
@@ -1023,112 +1117,128 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
     fun reuse(a: Asset) {
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val p = try { a.job_id?.let { repo.api().job(it).prompt } } catch (_: Exception) { null }
-            onReuse(if (p.isNullOrBlank()) "create" else "create?prompt=" + Uri.encode(p))
+            onReuse(if (p.isNullOrBlank()) "create" else "create?tab=image&prompt=" + Uri.encode(p))
         }
     }
     LaunchedEffect(filter) {
         scope.launch(kotlinx.coroutines.Dispatchers.IO) { reload() }
     }
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp).imePadding()) {
-        Text("Libreria", fontWeight = FontWeight.Bold, fontSize = 28.sp)
-        Text("Tutte le tue generazioni, organizzate sul server.", color = Muted, fontSize = 14.sp)
-        Spacer(Modifier.height(12.dp))
-        Surface(shape = CardShape, color = Color(0xFF1E1440), border = BorderStroke(1.dp, AccentV.copy(alpha = 0.35f))) {
-            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Cloud, null, tint = AccentV, modifier = Modifier.size(30.dp))
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Generazioni sul server", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("Sicure, sempre disponibili, sincronizzate.", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    val filters = listOf("Tutto" to Icons.Filled.Apps, "Immagini" to Icons.Filled.Image, "Video" to Icons.Filled.Videocam, "Preferiti" to Icons.Filled.Favorite)
+    // Un'unica griglia scrollabile: header compatto che scorre via, chips sticky,
+    // contenuto al centro. Niente più colonna fissa che ruba metà schermo.
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
+        modifier = Modifier.fillMaxSize().imePadding(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Libreria", fontWeight = FontWeight.Bold, fontSize = 26.sp, modifier = Modifier.weight(1f), maxLines = 1)
+                    Text("${visible.size}", color = Muted, fontSize = 14.sp)
                 }
-                Icon(Icons.Filled.CheckCircle, null, tint = Good, modifier = Modifier.size(24.dp))
+                Text("Tutte le tue generazioni, sul server.", color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = q, onValueChange = { q = it },
+                        modifier = Modifier.weight(1f), placeholder = { Text("Cerca nelle tue generazioni…") },
+                        leadingIcon = { Icon(Icons.Filled.Search, null, tint = Muted) },
+                        shape = RoundedCornerShape(24.dp), singleLine = true
+                    )
+                    Surface(shape = RoundedCornerShape(24.dp), color = Card, border = BorderStroke(1.dp, AccentV.copy(alpha = 0.5f))) {
+                        TextButton(onClick = { sortNewest = !sortNewest }) {
+                            Icon(Icons.Filled.Tune, null, tint = AccentV, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (sortNewest) "Recenti" else "Vecchi", color = AccentV, fontSize = 13.sp, maxLines = 1)
+                        }
+                    }
+                }
+                if (err != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Offline: $err", color = Warn, fontSize = 13.sp)
+                }
             }
         }
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedTextField(
-                value = q, onValueChange = { q = it },
-                modifier = Modifier.weight(1f), placeholder = { Text("Cerca nelle tue generazioni…") },
-                leadingIcon = { Icon(Icons.Filled.Search, null, tint = Muted) },
-                shape = RoundedCornerShape(24.dp), singleLine = true
-            )
-            Surface(shape = RoundedCornerShape(24.dp), color = Card, border = BorderStroke(1.dp, AccentV.copy(alpha = 0.5f))) {
-                TextButton(onClick = { sortNewest = !sortNewest }) {
-                    Icon(Icons.Filled.Tune, null, tint = AccentV, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (sortNewest) "Recenti" else "Vecchi", color = AccentV, fontSize = 13.sp, maxLines = 1)
-                }
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val filters = listOf("Tutto" to Icons.Filled.Apps, "Immagini" to Icons.Filled.Image, "Video" to Icons.Filled.Videocam, "Preferiti" to Icons.Filled.Favorite)
-            items(filters, key = { it.first }) { (f, ic) ->
-                val sel = filter == f
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = if (sel) AccentV.copy(alpha = 0.28f) else Card,
-                    border = BorderStroke(1.dp, if (sel) AccentV else CardBorder),
-                    onClick = { filter = f }
-                ) {
-                    Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(ic, null, tint = if (sel) Color.White else Muted, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(f, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, fontSize = 13.sp, maxLines = 1)
+        stickyHeader {
+            LazyRow(
+                modifier = Modifier.fillMaxWidth().background(Bg).padding(vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(filters, key = { it.first }) { (f, ic) ->
+                    val sel = filter == f
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = if (sel) AccentV.copy(alpha = 0.28f) else Card,
+                        border = BorderStroke(1.dp, if (sel) AccentV else CardBorder),
+                        onClick = { filter = f }
+                    ) {
+                        Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(ic, null, tint = if (sel) Color.White else Muted, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(f, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, fontSize = 13.sp, maxLines = 1)
+                        }
                     }
                 }
             }
         }
-        Spacer(Modifier.height(12.dp))
-        SectionHeader(Icons.Filled.Layers, "I tuoi progetti")
-        Spacer(Modifier.height(10.dp))
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(projects, key = { it.id }) { p ->
-                val req = rememberImgReq(urls[p.asset_ids.firstOrNull()], loader)
-                Surface(shape = RoundedCornerShape(16.dp), color = Card, border = BorderStroke(1.dp, CardBorder)) {
-                    Box(Modifier.size(150.dp, 130.dp)) {
-                        if (req != null && loader != null) {
-                            AsyncImage(
-                                model = req, imageLoader = loader!!, contentDescription = p.name,
-                                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
-                            )
-                        } else {
-                            Box(Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFF2A1B4E), Color(0xFF141428)))))
-                        }
-                        Box(Modifier.fillMaxSize().background(Scrim))
-                        Column(Modifier.align(Alignment.BottomStart).padding(10.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Filled.Folder, null, tint = Color.White, modifier = Modifier.size(15.dp))
-                                Spacer(Modifier.width(5.dp))
-                                Text(p.name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Column {
+                SectionHeader(Icons.Filled.Layers, "I tuoi progetti")
+                Spacer(Modifier.height(10.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(projects, key = { it.id }) { p ->
+                        val req = rememberImgReq(urls[p.asset_ids.firstOrNull()], loader)
+                        Surface(shape = RoundedCornerShape(16.dp), color = Card, border = BorderStroke(1.dp, CardBorder)) {
+                            Box(Modifier.size(140.dp, 112.dp)) {
+                                if (req != null && loader != null) {
+                                    AsyncImage(
+                                        model = req, imageLoader = loader!!, contentDescription = p.name,
+                                        modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Box(Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFF2A1B4E), Color(0xFF141428)))))
+                                }
+                                Box(Modifier.fillMaxSize().background(Scrim))
+                                Column(Modifier.align(Alignment.BottomStart).padding(10.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.Folder, null, tint = Color.White, modifier = Modifier.size(15.dp))
+                                        Spacer(Modifier.width(5.dp))
+                                        Text(p.name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                    Text("${p.asset_ids.size} elementi", color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp, maxLines = 1)
+                                }
                             }
-                            Text("${p.asset_ids.size} elementi", color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp, maxLines = 1)
+                        }
+                    }
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp), color = Color.Transparent,
+                            border = BorderStroke(1.dp, AccentV.copy(alpha = 0.5f)), onClick = { showNewProject = true }
+                        ) {
+                            Column(Modifier.size(100.dp, 112.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                Icon(Icons.Filled.Add, null, tint = AccentV, modifier = Modifier.size(26.dp))
+                                Text("Nuova\nraccolta", color = AccentV, fontSize = 12.sp, lineHeight = 15.sp)
+                            }
                         }
                     }
                 }
             }
-            item {
-                Surface(
-                    shape = RoundedCornerShape(16.dp), color = Color.Transparent,
-                    border = BorderStroke(1.dp, AccentV.copy(alpha = 0.5f)), onClick = { showNewProject = true }
-                ) {
-                    Column(Modifier.size(110.dp, 130.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                        Icon(Icons.Filled.Add, null, tint = AccentV, modifier = Modifier.size(26.dp))
-                        Text("Nuova\nraccolta", color = AccentV, fontSize = 12.sp, lineHeight = 15.sp)
-                    }
-                }
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            SectionHeader(Icons.Filled.History, "Generazioni (${visible.size})")
+        }
+        if (visible.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    if (filter == "Preferiti") "Nessun preferito: tocca il cuore su un elemento."
+                    else "Nessun elemento qui.",
+                    color = Muted, fontSize = 14.sp, modifier = Modifier.padding(vertical = 24.dp)
+                )
             }
         }
-        Spacer(Modifier.height(12.dp))
-        SectionHeader(Icons.Filled.History, "Generazioni recenti")
-        Spacer(Modifier.height(10.dp))
-        if (err != null) Text("Offline: $err", color = Warn, fontSize = 13.sp)
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.weight(1f)
-        ) {
             items(visible, key = { it.id }) { a ->
                 val req = rememberImgReq(urls[a.id], loader)
                 val isFav = favIds.contains(a.id)
@@ -1194,7 +1304,6 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
                 }
             }
         }
-    }
     if (showNewProject) {
         AlertDialog(
             onDismissRequest = { showNewProject = false; newProjectName = "" },
@@ -1554,7 +1663,7 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
                             Box(Modifier.weight(1f)) {
                                 GradientButton("Riusa prompt", Icons.Filled.ContentCopy, onClick = {
                                     val p = jobPrompt
-                                    onReusePrompt(if (p.isNullOrBlank()) "create" else "create?prompt=" + Uri.encode(p))
+                                    onReusePrompt(if (p.isNullOrBlank()) "create" else "create?tab=image&prompt=" + Uri.encode(p))
                                 })
                             }
                         }
@@ -1704,8 +1813,9 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
                 }
             }
             item {
+                val reuseTab = if (j.taskType == "video") "video" else "image"
                 GradientButton("Riusa prompt", Icons.Filled.ContentCopy, onClick = {
-                    onReusePrompt("create?prompt=" + Uri.encode(j.prompt))
+                    onReusePrompt("create?tab=$reuseTab&prompt=" + Uri.encode(j.prompt))
                 })
             }
         } ?: item {

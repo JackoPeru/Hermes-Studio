@@ -83,14 +83,19 @@ class MainActivity : ComponentActivity() {
                     NavHost(nav, "home", Modifier.padding(pad)) {
                         composable("home") { HomeScreen(repo) { nav.navigate(it) } }
                         composable(
-                            "create?prompt={prompt}",
-                            arguments = listOf(navArgument("prompt") {
-                                type = NavType.StringType; nullable = true; defaultValue = null
-                            })
+                            "create?tab={tab}&prompt={prompt}",
+                            arguments = listOf(
+                                navArgument("tab") { type = NavType.StringType; nullable = true; defaultValue = null },
+                                navArgument("prompt") { type = NavType.StringType; nullable = true; defaultValue = null }
+                            )
                         ) { backStack ->
-                            CreateImageScreen(repo, initialPrompt = backStack.arguments?.getString("prompt"))
+                            CreateScreen(
+                                repo,
+                                initialTab = backStack.arguments?.getString("tab"),
+                                initialPrompt = backStack.arguments?.getString("prompt"),
+                                onOpenAsset = { nav.navigate(it) }
+                            )
                         }
-                        composable("video") { CreateVideoScreen(repo, onOpenAsset = { nav.navigate(it) }) }
                         composable("library") {
                             LibraryScreen(repo, onAsset = { nav.navigate(it) }, onReuse = { nav.navigate(it) })
                         }
