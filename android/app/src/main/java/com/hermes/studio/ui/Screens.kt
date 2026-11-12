@@ -497,8 +497,6 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
     var prompt by remember(initialPrompt) { mutableStateOf(initialPrompt ?: "") }
     var preset by remember { mutableStateOf("cinematico") }
     var format by remember { mutableStateOf("1:1") }
-    var quality by remember { mutableStateOf("Alta") }
-    var resolution by remember { mutableStateOf("Alta") }
     var count by remember { mutableStateOf(1) }
     var state by remember { mutableStateOf("Pronto") }
     // Fino a 2 riferimenti (limite reale del template Qwen edit).
@@ -535,7 +533,8 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             Triple("480p · 480 × 480", 480, 480)
         )
     }
-    val stepsFor = mapOf("Bozza" to 12, "Alta" to 20, "Ultra" to 28)
+    // Passi fissi: la qualità si sceglie con la risoluzione, non con un flag separato.
+    val fixedSteps = 20
 
     suspend fun refreshRecent() {
         try {
@@ -636,7 +635,6 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Box(Modifier.weight(1f)) { DropDownField("Qualità", quality, listOf("Bozza", "Alta", "Ultra"), { quality = it }, Icons.Filled.Tune) }
                     Box(Modifier.weight(1f)) { DropDownField("Numero", "$count", listOf("1", "2", "4"), { count = it.toInt() }, Icons.Filled.Layers) }
                 }
             }
@@ -729,7 +727,7 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             GradientButton(if (isEdit) "Ritocca immagine" else "Genera immagine", Icons.Filled.AutoAwesome, enabled = prompt.isNotBlank(), onClick = {
                 val opts = resOptions(format)
                 val sel = opts.firstOrNull { it.first == resolution } ?: opts.first()
-                val steps = stepsFor[quality] ?: 20
+                val steps = fixedSteps
                 val refs = refIds.toList()
                 state = "Accodamento…"
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
