@@ -77,7 +77,15 @@ jobs:
           APK_SIZE="$(stat -c%s "${GITHUB_WORKSPACE}/${APK_NAME}")"
           APK_SHA="$(sha256sum "${GITHUB_WORKSPACE}/${APK_NAME}" | cut -d' ' -f1)"
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${APK_NAME}"
-          NOTES_JSON="$(git log --format=%s -n 8 | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip() and not l.startswith(("Publish update", "Update feed", "Merge "))][:6] or ["Miglioramenti e rifiniture."], ensure_ascii=False)')"
+          git log --format=%s -n 8 > /tmp/subjects.txt
+          python3 - > /tmp/notes.json <<'PYEOF'
+          import json
+          lines = [l.strip() for l in open("/tmp/subjects.txt") if l.strip()]
+          skip = ("Publish update", "Update feed", "Merge ")
+          notes = [l for l in lines if not l.startswith(skip)][:6]
+          print(json.dumps(notes or ["Miglioramenti e rifiniture."], ensure_ascii=False))
+          PYEOF
+          NOTES_JSON="$(cat /tmp/notes.json)"
           mkdir -p "${GITHUB_WORKSPACE}/updates"
           cat > "${GITHUB_WORKSPACE}/updates/latest.json" <<EOF
           {
