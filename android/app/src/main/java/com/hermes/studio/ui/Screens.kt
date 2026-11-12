@@ -194,43 +194,59 @@ fun formatDuration(s: Double?): String? {
 
 @Composable
 fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
-    var caps by remember { mutableStateOf<Capabilities?>(null) }
-    var jobs by remember { mutableStateOf<List<Job>>(emptyList()) }
-    var assets by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var caps by remember { mutableStateOf<Capabilities?>(repo.memCaps) }
+    var jobs by remember { mutableStateOf<List<Job>>(repo.memJobs ?: emptyList()) }
+    var assets by remember { mutableStateOf<List<Asset>>(repo.memAssets ?: emptyList()) }
     var urls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var err by remember { mutableStateOf<String?>(null) }
     var managerState by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
+    // URL derivate appena ci sono assets+loader (anche da cache di sessione:
+    // assetUrl legge solo DataStore, niente rete — la griglia si riempie subito).
+    LaunchedEffect(assets, loader) {
+        val l = loader ?: return@LaunchedEffect
+        val ids = assets.map { it.id }.toSet()
+        if (ids.isEmpty()) { if (urls.isNotEmpty()) urls = emptyMap(); return@LaunchedEffect }
+        if (urls.keys != ids) {
+            urls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                assets.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            }
+        }
+    }
 
     suspend fun refreshLight() {
-        // Poll leggero: assegna solo se cambiato, niente recompose a vuoto (perf).
+        // Poll leggero: jobs+assets in parallelo, assegna solo se cambiato.
         try {
             val api = repo.api()
-            val freshJobs = api.jobs(10)
-            if (freshJobs != jobs) jobs = freshJobs
-            val al = api.assets()
-            if (al != assets) {
-                assets = al
-                urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
-            }
+            val jobsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.jobs(10) }
+            val assetsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.assets() }
+            val freshJobs = jobsD.await()
+            if (freshJobs != jobs) { jobs = freshJobs; repo.memJobs = freshJobs }
+            val al = assetsD.await()
+            if (al != assets) { assets = al; repo.memAssets = al }
         } catch (_: Exception) {}
     }
     suspend fun refresh() {
         try {
-            // Parallelo: 3 round-trip in uno solo (perf su tailnet).
+            // Loader subito: con la cache di sessione la griglia si riempie prima della rete.
+            loader = repo.imageLoader()
+            // Parallelo: capabilities + status + jobs/assets in un solo giro.
             val api = repo.api()
             val capsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.capabilities() }
-            caps = capsD.await()
-            try {
-                val st = api.status()
+            val stD = scope.async(kotlinx.coroutines.Dispatchers.IO) {
+                try { api.status() } catch (_: Exception) { null }
+            }
+            val lightD = scope.async(kotlinx.coroutines.Dispatchers.IO) { refreshLight() }
+            val c = capsD.await()
+            caps = c; repo.memCaps = c
+            stD.await()?.let { st ->
                 val ms = st.manager_state.orEmpty()
                 managerState = if (ms.isNotBlank()) {
                     "Manager ${st.manager_desired.orEmpty()} · $ms"
                 } else ""
-            } catch (_: Exception) {}
-            refreshLight()
-            loader = repo.imageLoader()
+            }
+            lightD.await()
             err = null
         } catch (e: Exception) { err = e.message }
     }
@@ -510,8 +526,19 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
     var state by remember { mutableStateOf("Pronto") }
     // Fino a 2 riferimenti (limite reale del template Qwen edit).
     var refIds by remember { mutableStateOf(setOf<String>()) }
-    var recent by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var recent by remember { mutableStateOf(repo.memAssets?.filter { it.kind != "video" }?.take(6) ?: emptyList()) }
     var recentUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
+    // URL derivate (anche da cache): i riferimenti si vedono subito.
+    LaunchedEffect(recent, loader) {
+        loader ?: return@LaunchedEffect
+        val ids = recent.map { it.id }.toSet()
+        if (ids.isEmpty()) { if (recentUrls.isNotEmpty()) recentUrls = emptyMap(); return@LaunchedEffect }
+        if (recentUrls.keys != ids) {
+            recentUrls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                recent.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            }
+        }
+    }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
 
     val styles = listOf(
@@ -550,7 +577,6 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             val al = repo.api().assets("image").take(6)
             recent = al
             loader = repo.imageLoader()
-            recentUrls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
         } catch (_: Exception) {}
     }
     LaunchedEffect(Unit) { refreshRecent() }
@@ -807,9 +833,9 @@ fun DropDownField(label: String, value: String, options: List<String>, onSelect:
 @Composable
 fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (() -> Unit)? = null, showHeader: Boolean = true) {
     val scope = rememberCoroutineScope()
-    var images by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var images by remember { mutableStateOf(repo.memAssets?.filter { it.kind != "video" }?.take(12) ?: emptyList()) }
     var imgUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
-    var recentVideos by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var recentVideos by remember { mutableStateOf(repo.memAssets?.filter { it.kind == "video" }?.take(6) ?: emptyList()) }
     var videoUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var prompt by remember { mutableStateOf("") }
@@ -838,17 +864,38 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         "Cinematico" to "stile cinematografico"
     )
 
+    // URL derivate (anche da cache): start frame subito visibili.
+    LaunchedEffect(images, recentVideos, loader) {
+        loader ?: return@LaunchedEffect
+        val ii = images.map { it.id }.toSet()
+        if (ii.isEmpty()) { if (imgUrls.isNotEmpty()) imgUrls = emptyMap() }
+        else if (imgUrls.keys != ii) {
+            imgUrls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                images.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            }
+        }
+        val vi = recentVideos.map { it.id }.toSet()
+        if (vi.isEmpty()) { if (videoUrls.isNotEmpty()) videoUrls = emptyMap() }
+        else if (videoUrls.keys != vi) {
+            videoUrls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                recentVideos.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            }
+        }
+    }
+
     suspend fun refresh() {
         try {
+            // Caps + immagini + video in parallelo (prima erano 3 round-trip in fila).
             val api = repo.api()
-            capsVideo = api.capabilities().video.firstOrNull { it.task == "image-to-video" }
-            val imgs = api.assets("image").take(12)
+            val capsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.capabilities() }
+            val imgsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.assets("image").take(12) }
+            val vidsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.assets("video").take(6) }
+            capsVideo = capsD.await().video.firstOrNull { it.task == "image-to-video" }
+            val imgs = imgsD.await()
             images = imgs
             loader = repo.imageLoader()
-            imgUrls = imgs.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
-            val vids = api.assets("video").take(6)
+            val vids = vidsD.await()
             recentVideos = vids
-            videoUrls = vids.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
             selectedIds = selectedIds.filter { id -> imgs.any { it.id == id } }.take(maxRefs()).toSet()
         } catch (_: Exception) {}
     }
@@ -1069,7 +1116,7 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
     var q by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf("Tutto") }
     var sortNewest by remember { mutableStateOf(true) }
-    var assets by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var assets by remember { mutableStateOf<List<Asset>>(repo.memAssets ?: emptyList()) }
     var favIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var projects by remember { mutableStateOf<List<Project>>(emptyList()) }
     var urls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
@@ -1077,6 +1124,17 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
     var showNewProject by remember { mutableStateOf(false) }
     var newProjectName by remember { mutableStateOf("") }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
+    // URL derivate (anche da cache): la griglia si riempie prima della rete.
+    LaunchedEffect(assets, loader) {
+        loader ?: return@LaunchedEffect
+        val ids = assets.map { it.id }.toSet()
+        if (ids.isEmpty()) { if (urls.isNotEmpty()) urls = emptyMap(); return@LaunchedEffect }
+        if (urls.keys != ids) {
+            urls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                assets.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            }
+        }
+    }
     // Serializza i toggle: tap rapidi non devono perdersi/ribaltarsi.
     val favMutex = remember { Mutex() }
 
@@ -1097,10 +1155,7 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
                 try { api.projects() } catch (_: Exception) { emptyList() }
             }
             val all = allD.await()
-            if (all != assets) {
-                assets = all
-                urls = all.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
-            }
+            if (all != assets) { assets = all; repo.memAssets = all }
             favIds = favD.await()
             projects = prjD.await()
             loader = repo.imageLoader()
@@ -1393,9 +1448,10 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
             // Backoff su errori: non spammare rete/batteria se il server è giù.
             kotlinx.coroutines.delay(5000L * (1 shl minOf(gpuFails, 3)))
             try {
-                gpus = repo.api().gpu()
-                gpuErr = null
-                gpuLive = true
+                val fresh = repo.api().gpu()
+                if (fresh != gpus) gpus = fresh
+                if (gpuErr != null) gpuErr = null
+                if (!gpuLive) gpuLive = true
                 gpuFails = 0
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e

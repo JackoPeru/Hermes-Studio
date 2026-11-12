@@ -154,6 +154,13 @@ class StudioRepo(private val ctx: Context) {
         return loader
     }
 
+    // Cache di sessione (stale-while-revalidate): le schermate mostrano subito
+    // l'ultimo stato noto e aggiornano in background — niente spinner a ogni
+    // navigazione. Solo memoria, mai disco: la verità resta sul server.
+    @Volatile var memJobs: List<Job>? = null
+    @Volatile var memAssets: List<Asset>? = null
+    @Volatile var memCaps: Capabilities? = null
+
     suspend fun testConnection(): String {
         api().capabilities()
         return baseUrl()
