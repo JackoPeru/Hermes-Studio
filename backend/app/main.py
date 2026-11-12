@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import logging
 import random
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,6 +29,7 @@ from .workflows import DEFAULT_NEGATIVE, apply_style
 # Single worker: serialized dispatch matches VRAM reality (never assume 2 heavy models resident).
 _worker_task: asyncio.Task | None = None
 _stop = asyncio.Event()
+_log = logging.getLogger("hermes-studio")
 
 
 def _comfy() -> ComfyUIAdapter:
@@ -89,7 +91,26 @@ async def _dispatch_loop() -> None:
         if jid is None:
             await asyncio.sleep(2.0)
             continue
-        await _run_one(jid)
+        try:
+            await _run_one(jid)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Un singolo job guasto non deve mai uccidere il worker:
+            # logga e marca failed, gli altri job continuano.
+            _log.exception("worker: job %s crashato fuori dal flusso gestito", jid)
+            try:
+                c2 = db.connect()
+                try:
+                    c2.execute(
+                        "UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=? "
+                        "AND status IN ('queued','preparing','running')",
+                        ("worker crash: vedi log servizio", db.now(), jid))
+                    c2.commit()
+                finally:
+                    c2.close()
+            except Exception:
+                pass
         await asyncio.sleep(0.5)
 
 
@@ -311,11 +332,14 @@ async def _run_one_video(job_id: str) -> None:
                 cx.commit()
                 return
             # Il manager accetta input solo da root fidate (hub uploads, runtimes,
-            # outputs, /tmp): staging copia in /tmp, submit, pulizia subito dopo.
+            # outputs, /tmp): staging in ~/.hermes/hermes-studio-in (root fidata
+            # E scrivibile: la unit ha ReadWritePaths dedicato; /tmp e /opt non
+            # sono scrivibili nel sandbox ProtectSystem=strict). Submit, poi pulizia.
             from pathlib import Path as _P
             import shutil as _sh2
-            import tempfile as _tf
-            stage = _P(_tf.gettempdir()) / f"hs_{job_id}_in{_P(src_path).suffix.lower() or '.png'}"
+            stage_dir = _P.home() / ".hermes" / "hermes-studio-in"
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            stage = stage_dir / f"hs_{job_id}_in{_P(src_path).suffix.lower() or '.png'}"
             try:
                 await asyncio.to_thread(_sh2.copy2, src_path, stage)
             except Exception as e:

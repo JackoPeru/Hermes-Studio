@@ -21,6 +21,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/hermes-studio
+# Staging input video per il manager (root fidata ~/.hermes): scrivibile
+# nonostante ProtectHome (ReadWritePaths ha precedenza).
+ReadWritePaths=/home/matteo/.hermes/hermes-studio-in
 # NON abilitare/avviare senza OK esplicito dell'utente.
 
 [Install]
