@@ -528,6 +528,7 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
     var refIds by remember { mutableStateOf(setOf<String>()) }
     var recent by remember { mutableStateOf(repo.memAssets?.filter { it.kind != "video" }?.take(6) ?: emptyList()) }
     var recentUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
+    var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
     // URL derivate (anche da cache): i riferimenti si vedono subito.
     LaunchedEffect(recent, loader) {
         loader ?: return@LaunchedEffect
@@ -539,7 +540,6 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             }
         }
     }
-    var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
 
     val styles = listOf(
         StylePreset("cinematico", "Cinematico", Icons.Filled.Movie),
