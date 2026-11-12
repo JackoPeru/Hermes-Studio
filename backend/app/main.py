@@ -780,10 +780,12 @@ VIDEO_PRESETS = {
 }
 
 
-def _video_preset_for(w: int, h: int) -> tuple[str, int, int]:
+def _video_preset_for(w: int, h: int) -> str:
+    """Solo l'orientamento sceglie il preset; le dimensioni richieste passano
+    (clamp + snap in _norm_wh) così 480p/720p sono onorati davvero."""
     if h > w:
-        return VIDEO_PRESETS["tall"]
-    return VIDEO_PRESETS["wide"]
+        return VIDEO_PRESETS["tall"][0]
+    return VIDEO_PRESETS["wide"][0]
 
 
 @app.post("/api/v1/jobs", response_model=JobOut, status_code=201)
@@ -812,8 +814,8 @@ async def create_job(body: JobCreate, _: None = Depends(require_auth)):
             raise HTTPException(422, "video richiede asset_ids con almeno 1 immagine di partenza")
         model = body.model or "minimax-h3-turbo-4step"
         prompt = body.prompt.strip()
-        preset, pw, ph = _video_preset_for(body.width or 1344, body.height or 768)
-        w, h = _norm_wh(pw, ph, _VIDEO_AREA_CAP_PX)
+        preset = _video_preset_for(body.width or 1344, body.height or 768)
+        w, h = _norm_wh(body.width or 1344, body.height or 768, _VIDEO_AREA_CAP_PX)
         steps = body.steps or 4
         seed = body.seed if body.seed is not None else random.randint(0, 2**31 - 1)
         params = {"width": w, "height": h, "steps": steps, "seed": seed,

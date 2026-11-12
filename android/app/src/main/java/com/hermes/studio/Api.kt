@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -104,7 +105,7 @@ class StudioRepo(private val ctx: Context) {
         require(b.startsWith("http://") || b.startsWith("https://")) { "URL deve iniziare con http(s)://" }
         if (!b.endsWith("/")) b += "/"
         // Fail-fast su URL malformati invece di crash Retrofit/OkHttp dopo.
-        okhttp3.HttpUrl.get(b) ?: throw IllegalArgumentException("URL backend non valido")
+        b.toHttpUrl()
         ctx.store.edit { it[KEY_BASE] = b; it[KEY_TOKEN] = token.trim() }
         cachedApi = null; cachedLoader = null
     }
