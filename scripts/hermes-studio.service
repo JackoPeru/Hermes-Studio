@@ -21,7 +21,10 @@ RestartSec=5
 UMask=0027
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
+# read-only (non true): con true i ReadWritePaths sotto /home non vengono
+# applicati dal sandbox e la staging fallisce (verificato). Così /home è
+# leggibile ma non scrivibile, tranne i path whitelisted sotto.
+ProtectHome=read-only
 ReadWritePaths=/var/lib/hermes-studio
 # Staging input video per il manager (root fidata ~/.hermes): scrivibile
 # nonostante ProtectHome (ReadWritePaths ha precedenza).
