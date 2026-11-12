@@ -4,11 +4,11 @@ App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per g
 
 ## Struttura
 - `backend/` FastAPI `/api/v1/*` (jobs persistenti SQLite WAL, ComfyUIAdapter, coda seriale, SSE, assets+thumbs, progetti/preferiti).
-- `android/` app nativa: Home, Crea (immagine), Crea video, Libreria, Impostazioni (pairing + GPU live + **auto-update in-app**). Nessuna WebView.
+- `android/` app nativa: Home, Crea unificata (immagine/video con selettore), Libreria, Impostazioni (pairing + GPU live + **auto-update in-app**). Nessuna WebView.
 - `docs/DISCOVERY.md` ricognizione reale, `docs/API.md` contratto, `docs/PAIRING.md` pairing Tailscale, `docs/RUNBOOK.md` operativo, `docs/UPDATE.md` auto-update, `docs/VIDEO_H3.md` pipeline video verificata.
 - `tests/test_backend.py` 17 test verdi. `.env.example` per tutte le env.
 
-## V2
+## V2 (superata: il ritocco era disabilitato, ora in V3; vale il resto)
 - Dettaglio job (tap in coda: stato/progresso reali, output, annulla, riusa) e dettaglio asset (player video in-app, scarica in galleria, condividi, preferito, assegna a progetto, riusa, elimina, fullscreen con zoom per le immagini).
 
 ## V3 (corrente)
@@ -31,8 +31,8 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r backend/requirements.txt
 HERMES_STUDIO_DATA=/var/lib/hermes-studio HERMES_STUDIO_HOST=127.0.0.1 HERMES_STUDIO_PORT=8650 \
   uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8650
-# token in $DATA/bearer.token (0600) oppure HERMES_STUDIO_BEARER; incollarlo nell'app in Impostazioni.
-# Tailscale Serve davanti per HTTPS privato (vedi docs/PAIRING.md).
+# token in HERMES_STUDIO_BEARER (env) o $DATA/bearer.token (0600, creato al primo avvio); incollarlo nell'app in Impostazioni.
+# Tailscale Serve HTTP privato in tailnet (l'app usa http://): vedi docs/PAIRING.md.
 ```
 
 ## Test / lint

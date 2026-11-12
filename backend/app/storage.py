@@ -9,6 +9,10 @@ from .config import THUMBS_DIR
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
+# Bombe di decompressione: 25MB compressi possono esplodere in gigapixel.
+# 250MP copre qualsiasi foto reale (sensori fino a 200MP) e blocca l'assurdo.
+Image.MAX_IMAGE_PIXELS = 250_000_000
+
 def safe_name(name: str) -> str:
     n = _SAFE.sub("_", name).strip("._") or "file"
     return n[:120]

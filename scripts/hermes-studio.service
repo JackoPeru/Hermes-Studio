@@ -8,7 +8,7 @@ Type=simple
 User=matteo
 Group=matteo
 WorkingDirectory=/opt/hermes/hermes-studio/backend
-EnvironmentFile=/etc/hermes/hermes-studio.env
+EnvironmentFile=-/etc/hermes/hermes-studio.env
 Environment=HERMES_STUDIO_DATA=/var/lib/hermes-studio
 Environment=HERMES_STUDIO_HOST=127.0.0.1
 Environment=HERMES_STUDIO_PORT=8650

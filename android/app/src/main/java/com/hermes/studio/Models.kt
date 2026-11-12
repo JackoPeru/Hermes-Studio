@@ -12,6 +12,8 @@ data class CapTask(
     val model: String = "",
     val enabled: Boolean = false,
     val disabled_reason: String? = null,
+    val max_width: Int? = null,
+    val max_height: Int? = null,
     val supports_reference: Boolean = false,
     val notes: String = ""
 )

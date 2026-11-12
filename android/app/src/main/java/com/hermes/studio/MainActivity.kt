@@ -33,6 +33,14 @@ class MainActivity : ComponentActivity() {
                 val nav = rememberNavController()
                 var online by remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
+                // Navigazione top-level senza duplicati nel back-stack.
+                fun goTop(route: String) {
+                    nav.navigate(route) {
+                        popUpTo(nav.graph.startDestinationId) { saveState = true }
+                        launchSingleTop = true
+                        restoreState = true
+                    }
+                }
                 LaunchedEffect(Unit) {
                     // Test autenticato reale: capabilities, non health (no-auth darebbe falso online).
                     try { repo.api().capabilities(); online = true } catch (_: Exception) { online = false }
@@ -49,7 +57,7 @@ class MainActivity : ComponentActivity() {
                         HermesTopBar(online, label) {
                             scope.launch {
                                 try { repo.api().capabilities(); online = true } catch (_: Exception) { online = false }
-                                nav.navigate("settings")
+                                goTop("settings")
                             }
                         }
                     },
@@ -58,22 +66,22 @@ class MainActivity : ComponentActivity() {
                         val r = back?.destination?.route?.substringBefore("?")
                         NavigationBar(containerColor = Card) {
                             NavigationBarItem(
-                                selected = r == "home", onClick = { nav.navigate("home") },
+                                selected = r == "home", onClick = { goTop("home") },
                                 icon = { Icon(Icons.Filled.Home, null) }, label = { Text("Home") },
                                 colors = navColors()
                             )
                             NavigationBarItem(
-                                selected = r == "create", onClick = { nav.navigate("create") },
+                                selected = r == "create", onClick = { goTop("create") },
                                 icon = { Icon(Icons.Filled.AutoAwesome, null) }, label = { Text("Crea") },
                                 colors = navColors()
                             )
                             NavigationBarItem(
-                                selected = r == "library", onClick = { nav.navigate("library") },
+                                selected = r == "library", onClick = { goTop("library") },
                                 icon = { Icon(Icons.Filled.Image, null) }, label = { Text("Libreria") },
                                 colors = navColors()
                             )
                             NavigationBarItem(
-                                selected = r == "settings", onClick = { nav.navigate("settings") },
+                                selected = r == "settings", onClick = { goTop("settings") },
                                 icon = { Icon(Icons.Filled.Settings, null) }, label = { Text("Impostazioni") },
                                 colors = navColors()
                             )

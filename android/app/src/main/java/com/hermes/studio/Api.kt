@@ -100,7 +100,12 @@ class StudioRepo(private val ctx: Context) {
     suspend fun token(): String = ctx.store.data.map { it[KEY_TOKEN] ?: "" }.first()
 
     suspend fun save(base: String, token: String) {
-        ctx.store.edit { it[KEY_BASE] = base.trim(); it[KEY_TOKEN] = token.trim() }
+        var b = base.trim()
+        require(b.startsWith("http://") || b.startsWith("https://")) { "URL deve iniziare con http(s)://" }
+        if (!b.endsWith("/")) b += "/"
+        // Fail-fast su URL malformati invece di crash Retrofit/OkHttp dopo.
+        okhttp3.HttpUrl.get(b) ?: throw IllegalArgumentException("URL backend non valido")
+        ctx.store.edit { it[KEY_BASE] = b; it[KEY_TOKEN] = token.trim() }
         cachedApi = null; cachedLoader = null
     }
 
@@ -161,31 +166,63 @@ class StudioRepo(private val ctx: Context) {
 
     /** Upload foto dal telefono (Photo Picker): diventa subito elemento di libreria. */
     suspend fun uploadImage(uri: Uri): UploadOut = withContext(Dispatchers.IO) {
-        val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        val resolver = ctx.contentResolver
+        val mime = resolver.getType(uri) ?: "image/jpeg"
+        if (!mime.startsWith("image/")) throw IllegalStateException("Solo immagini (JPEG/PNG/WebP)")
+        val ext = when {
+            mime.contains("png", true) -> ".png"
+            mime.contains("webp", true) -> ".webp"
+            else -> ".jpg"
+        }
+        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalStateException("File non leggibile")
         if (bytes.size > 25 * 1024 * 1024) throw IllegalStateException("File oltre 25 MB")
         val part = MultipartBody.Part.createFormData(
-            "f", "upload.jpg", bytes.toRequestBody("image/*".toMediaType()))
+            "f", "upload$ext", bytes.toRequestBody(mime.toMediaType()))
         api().upload(part)
     }
 
-    /** SSE live: chiama onJobsChanged a ogni evento job (con reconnect del client). */
+    /** SSE live: client dedicato senza read timeout (standard SSE) + watchdog in UI. */
     suspend fun watchEvents(listener: EventSourceListener): EventSource {
+        val tok = token()
+        val cli = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MINUTES)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .addInterceptor(Interceptor { c ->
+                val r = c.request().newBuilder()
+                if (tok.isNotBlank()) r.addHeader("Authorization", "Bearer $tok")
+                c.proceed(r.build())
+            }).build()
         val req = Request.Builder().url(baseUrl().trimEnd('/') + "/api/v1/events").build()
-        return EventSources.createFactory(buildClient(token())).newEventSource(req, listener)
+        return EventSources.createFactory(cli).newEventSource(req, listener)
     }
 
     /** Scarica l'originale in cache (per share/galleria). */
     suspend fun downloadToCache(a: Asset): java.io.File = withContext(Dispatchers.IO) {
         val url = absoluteUrl(a.path) ?: throw IllegalStateException("URL asset mancante")
         val dir = java.io.File(ctx.cacheDir, "hermes-share").apply { mkdirs() }
-        val out = java.io.File(dir, a.id + if (a.kind == "video") ".mp4" else ".jpg")
+        // Nome provvisorio: estensione vera dal Content-Type di risposta.
+        val tmp = java.io.File(dir, a.id + ".bin")
+        var ext = if (a.kind == "video") ".mp4" else ".jpg"
         authedClient().newCall(Request.Builder().url(url).build()).execute().use { r ->
             if (!r.isSuccessful) throw IllegalStateException("Download fallito (${r.code})")
-            (r.body ?: throw IllegalStateException("Risposta vuota")).byteStream().use { input ->
-                out.outputStream().use { input.copyTo(it) }
+            ext = when {
+                (r.header("Content-Type") ?: "").contains("png") -> ".png"
+                (r.header("Content-Type") ?: "").contains("webp") -> ".webp"
+                (r.header("Content-Type") ?: "").contains("mp4") -> ".mp4"
+                (r.header("Content-Type") ?: "").contains("webm") -> ".webm"
+                a.kind == "video" -> ".mp4"
+                else -> ".jpg"
+            }
+            r.body!!.byteStream().use { input ->
+                tmp.outputStream().use { input.copyTo(it) }
             }
         }
+        val out = java.io.File(dir, a.id + ext)
+        if (out.exists()) out.delete()
+        tmp.renameTo(out)
         out
     }
 

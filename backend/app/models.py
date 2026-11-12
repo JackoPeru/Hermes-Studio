@@ -55,6 +55,8 @@ class JobOut(BaseModel):
     height: int | None = None
     steps: int | None = None
     seed: int | None = None
+    duration: float | None = None
+    asset_ids: list[str] = Field(default_factory=list)
     comfy_prompt_id: str | None = None
     progress: float | None = None
     error: str | None = None
@@ -82,9 +84,9 @@ class GpuOut(BaseModel):
     mem_total_mb: float | None = None
 
 class PruneIn(BaseModel):
-    older_than_days: float = Field(default=30, ge=0)
+    older_than_days: float = Field(default=30, ge=1)
     include_completed: bool = False
-    prune_uploads_older_than_days: float = Field(default=7, ge=0)
+    prune_uploads_older_than_days: float = Field(default=7, ge=1)
     limit: int = Field(default=500, ge=1, le=5000)
 
 class PruneOut(BaseModel):

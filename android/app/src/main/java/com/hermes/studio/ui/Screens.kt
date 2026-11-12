@@ -46,7 +46,10 @@ import coil.request.ImageRequest
 import com.hermes.studio.*
 import com.hermes.studio.update.AppUpdateManager
 import kotlinx.coroutines.async
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 // ---------- Design system (dai mockup approvati) ----------
 val Bg = Color(0xFF0B0B12)
@@ -208,7 +211,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
             val al = api.assets()
             if (al != assets) {
                 assets = al
-                urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+                urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
             }
         } catch (_: Exception) {}
     }
@@ -264,6 +267,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
     }
     LaunchedEffect(Unit) {
         while (true) {
+            ensureActive() // il cancel deve uscire dal loop, non restare appeso
             kotlinx.coroutines.delay(10000)
             if (live && System.currentTimeMillis() - lastEventAt > 45000) {
                 try { esRef?.cancel() } catch (_: Exception) {}
@@ -276,11 +280,13 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
     LaunchedEffect(live) {
         if (!live) {
             while (true) {
+                ensureActive()
                 kotlinx.coroutines.delay(15000)
                 refreshLight()
             }
         } else {
             while (true) {
+                ensureActive()
                 kotlinx.coroutines.delay(30000)
                 refreshLight()
             }
@@ -454,6 +460,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
 
 // ---------- Crea unificata (selettore Immagine/Video in top) ----------
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateScreen(
     repo: StudioRepo,
@@ -541,7 +548,7 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             val al = repo.api().assets("image").take(6)
             recent = al
             loader = repo.imageLoader()
-            recentUrls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+            recentUrls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
         } catch (_: Exception) {}
     }
     LaunchedEffect(Unit) { refreshRecent() }
@@ -834,10 +841,10 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             val imgs = api.assets("image").take(12)
             images = imgs
             loader = repo.imageLoader()
-            imgUrls = imgs.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+            imgUrls = imgs.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
             val vids = api.assets("video").take(6)
             recentVideos = vids
-            videoUrls = vids.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+            videoUrls = vids.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
             selectedIds = selectedIds.filter { id -> imgs.any { it.id == id } }.take(maxRefs()).toSet()
         } catch (_: Exception) {}
     }
@@ -1066,6 +1073,8 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
     var showNewProject by remember { mutableStateOf(false) }
     var newProjectName by remember { mutableStateOf("") }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
+    // Serializza i toggle: tap rapidi non devono perdersi/ribaltarsi.
+    val favMutex = remember { Mutex() }
 
     suspend fun reload() {
         try {
@@ -1086,7 +1095,7 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
             val all = allD.await()
             if (all != assets) {
                 assets = all
-                urls = all.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+                urls = all.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
             }
             favIds = favD.await()
             projects = prjD.await()
@@ -1104,13 +1113,15 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
         )
     }
     fun toggleFav(a: Asset) {
-        val on = !favIds.contains(a.id)
-        favIds = if (on) favIds + a.id else favIds - a.id // ottimistico: UI immediata
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                repo.api().favorite(a.id, on)
-            } catch (_: Exception) {
-                favIds = if (on) favIds - a.id else favIds + a.id // rollback
+            favMutex.withLock {
+                val on = !favIds.contains(a.id)
+                favIds = if (on) favIds + a.id else favIds - a.id // ottimistico: UI immediata
+                try {
+                    repo.api().favorite(a.id, on)
+                } catch (_: Exception) {
+                    favIds = if (on) favIds - a.id else favIds + a.id // rollback
+                }
             }
         }
     }
@@ -1189,8 +1200,8 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
                 SectionHeader(Icons.Filled.Layers, "I tuoi progetti")
                 Spacer(Modifier.height(10.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(projects, key = { it.id }) { p ->
-                        val req = rememberImgReq(urls[p.asset_ids.firstOrNull()], loader)
+            items(projects, key = { it.id }) { p ->
+                val req = rememberImgReq(p.asset_ids.firstNotNullOfOrNull { urls[it] }, loader)
                         Surface(shape = RoundedCornerShape(16.dp), color = Card, border = BorderStroke(1.dp, CardBorder)) {
                             Box(Modifier.size(140.dp, 112.dp)) {
                                 if (req != null && loader != null) {
@@ -1345,6 +1356,10 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
     var gpuErr by remember { mutableStateOf<String?>(null) }
     var gpuLive by remember { mutableStateOf(false) }
     val updateState by updater.state.collectAsState()
+    val ctx = LocalContext.current
+    val notifLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) {}
     suspend fun refreshSystem(includeStorage: Boolean = true) {
         if (includeStorage) {
             try {
@@ -1364,14 +1379,21 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
         scope.launch { updater.checkForUpdates() }
     }
     // GPU live: refresh ogni 5s finché Impostazioni è visibile (perf: 1 call leggera).
+    var gpuFails by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) {
         while (true) {
-            kotlinx.coroutines.delay(5000)
+            ensureActive()
+            // Backoff su errori: non spammare rete/batteria se il server è giù.
+            kotlinx.coroutines.delay(5000L * (1 shl minOf(gpuFails, 3)))
             try {
                 gpus = repo.api().gpu()
                 gpuErr = null
                 gpuLive = true
-            } catch (e: Exception) { gpuErr = e.message; gpuLive = false }
+                gpuFails = 0
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                gpuErr = e.message; gpuLive = false; gpuFails++
+            }
         }
     }
     LazyColumn(
@@ -1529,6 +1551,15 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Controllo automatico", modifier = Modifier.weight(1f), fontSize = 14.sp)
                         Switch(checked = updateState.autoCheckEnabled, onCheckedChange = { updater.setAutoCheckEnabled(it) })
+                    }
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+                        androidx.core.content.ContextCompat.checkSelfPermission(
+                            ctx, android.Manifest.permission.POST_NOTIFICATIONS
+                        ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                    ) {
+                        TextButton(onClick = { notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS) }) {
+                            Text("Abilita notifiche update", color = AccentV, fontSize = 13.sp)
+                        }
                     }
                 }
             }
@@ -1739,11 +1770,16 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
             val j = repo.api().job(jobId)
             job = j
             loader = repo.imageLoader()
-            val found = j.outputs.mapNotNull { aid ->
-                try { repo.api().asset(aid) } catch (_: Exception) { null }
+            // Parallelo: N+1 sequenziale inchioda il dettaglio su job con molti output.
+            val found = kotlinx.coroutines.coroutineScope {
+                j.outputs.map { aid ->
+                    async(kotlinx.coroutines.Dispatchers.IO) {
+                        try { repo.api().asset(aid) } catch (_: Exception) { null }
+                    }
+                }.awaitAll().filterNotNull()
             }
             outAssets = found
-            outUrls = found.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) ?: "") }
+            outUrls = found.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
         } catch (e: Exception) { msg = "Errore: ${e.message}" }
     }
     LaunchedEffect(jobId) { scope.launch(kotlinx.coroutines.Dispatchers.IO) { load() } }
@@ -1928,11 +1964,15 @@ fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier
             if (player === p) player = null
         }
     }
-    // Avanzamento tempo mentre riproduce.
+    // Avanzamento tempo mentre riproduce (sospeso durante lo scrub).
+    var seeking by remember { mutableStateOf(false) }
     LaunchedEffect(playing, player) {
         while (playing) {
+            ensureActive()
             kotlinx.coroutines.delay(500)
-            player?.let { posMs = it.currentPosition.coerceAtLeast(0L) }
+            if (!seeking) {
+                player?.let { posMs = it.currentPosition.coerceAtLeast(0L) }
+            }
         }
     }
     val current = player
@@ -1974,10 +2014,19 @@ fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier
                     .padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
                 if (durMs > 0) {
+                    // Frazione 0..1: niente perdita di precisione Float sui ms.
+                    val frac = (posMs.toDouble() / durMs).toFloat().coerceIn(0f, 1f)
                     Slider(
-                        value = posMs.toFloat().coerceIn(0f, durMs.toFloat()),
-                        onValueChange = { posMs = it.toLong(); current.seekTo(it.toLong()) },
-                        valueRange = 0f..durMs.toFloat(),
+                        value = frac,
+                        onValueChange = {
+                            seeking = true
+                            posMs = (it * durMs).toLong()
+                        },
+                        onValueChangeFinished = {
+                            current.seekTo(posMs)
+                            seeking = false
+                        },
+                        valueRange = 0f..1f,
                         colors = SliderDefaults.colors(thumbColor = AccentV, activeTrackColor = AccentV)
                     )
                 }
@@ -1995,4 +2044,3 @@ private fun fmtMs(ms: Long): String {
     val s = ms / 1000
     return "%d:%02d".format(s / 60, s % 60)
 }
-

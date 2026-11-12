@@ -38,8 +38,16 @@ come HermesHub che legge le release dalla propria repo. Niente seconda repo
 2. Firma in locale:
    `printf 'hermes-studio-update-v1\n%s\n%s\n%s\n%s\n%s' CODE NAME URL SIZE SHA | openssl dgst -sha256 -sign hermes-studio-update-sign.key | base64 -w0`
    usando i valori stampati dal workflow (`MANIFEST-DA-FIRMARE`).
+   Note: `base64 -w0` è GNU (su macOS usare `openssl base64 -A`); lo SHA nel
+   manifest va in minuscolo (il signer normalizza con `lowercase()`).
+   Verifica con `scripts/verify-feed.sh` prima del push.
 3. Compila `signature` in `updates/latest.json`, commit + push.
 4. Test: Impostazioni → Controlla ora → Scarica → Installa.
+
+## Versioni (mappa onesta)
+- Backend `0.2.0` (`GET /health`), API stabile `1.0.0`, app `0.1.1-ghN`
+  (`versionCode = 10 + run_number`), tag release `studio-N`. Non sono lo
+  stesso numero: il backend evolve per contenuto, l'app per build CI.
 
 ## Nota primo passaggio (2026-11-11)
 

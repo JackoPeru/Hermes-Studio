@@ -6,10 +6,10 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+      - run: pip install -r backend/requirements-dev.txt
       - run: ruff check backend tests
       - run: pytest -q
   android-debug:
@@ -20,8 +20,8 @@ jobs:
       HERMES_KEY_ALIAS: ${{ secrets.HERMES_KEY_ALIAS }}
       HERMES_KEY_PASSWORD: ${{ secrets.HERMES_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "17" }
       - uses: gradle/actions/setup-gradle@v4
       - name: Decode keystore (firma stabile per updater; se assente, debug-key default)

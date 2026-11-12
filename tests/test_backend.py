@@ -428,3 +428,177 @@ def test_prune_jobs_and_uploads(client, tmp_path):
     r = client.post("/api/v1/maintenance/prune", json={"include_completed": True})
     assert r.json()["deleted_jobs"] == 1
 
+
+@pytest.mark.asyncio
+async def test_recovery_requeues_and_cancels(client):
+    import app.db as dbmod
+    import app.main as m
+    cx = dbmod.connect()
+    try:
+        for jid, st in [("rec-prep", "preparing"), ("rec-run", "running"),
+                        ("rec-run-mid", "running"), ("rec-canc", "cancelling")]:
+            cx.execute(
+                "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,comfy_prompt_id,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (jid, "image", st, "e", "m", "p", "{}",
+                 "mid-x" if jid == "rec-run-mid" else None, dbmod.now(), dbmod.now()))
+        cx.commit()
+    finally:
+        cx.close()
+    out = await m._recover_once()
+    assert out == {"requeued": 3, "cancelled": 1}
+    cx = dbmod.connect()
+    try:
+        got = {r[0]: r[1] for r in cx.execute("SELECT id,status FROM jobs WHERE id LIKE 'rec-%'").fetchall()}
+    finally:
+        cx.close()
+    assert got == {"rec-prep": "queued", "rec-run": "queued",
+                   "rec-run-mid": "queued", "rec-canc": "cancelled"}
+
+@pytest.mark.asyncio
+async def test_cancel_running_propagates_to_manager(client, monkeypatch):
+    import asyncio as _aio
+    import app.db as dbmod
+    import app.main as m
+    jid = dbmod.new_id("job")
+    cx = dbmod.connect()
+    try:
+        cx.execute(
+            "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,comfy_prompt_id,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (jid, "video", "cancelling", "comfyui", "x", "p", "{}", "mid-z",
+             dbmod.now(), dbmod.now()))
+        cx.commit()
+    finally:
+        cx.close()
+    cancelled = []
+    class FakeMgr:
+        async def submit_video(self, preset, params):
+            raise AssertionError("no submit atteso")
+        async def get_job(self, mid):
+            raise AssertionError("no poll atteso")
+        async def cancel_job(self, mid):
+            cancelled.append(mid)
+            return {"job_id": mid, "status": "cancelled"}
+    monkeypatch.setattr(m, "_manager", lambda: FakeMgr())
+    async def no_sleep(*a, **k):
+        return None
+    monkeypatch.setattr(_aio, "sleep", no_sleep)
+    await m._run_one_video(jid)
+    assert cancelled == ["mid-z"]
+    cx = dbmod.connect()
+    try:
+        st = cx.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()[0]
+    finally:
+        cx.close()
+    assert st == "cancelled"
+
+@pytest.mark.asyncio
+async def test_submit_race_keeps_cancel(client, monkeypatch):
+    import asyncio as _aio
+    import app.db as dbmod
+    import app.main as m
+    jid = dbmod.new_id("job")
+    cx = dbmod.connect()
+    try:
+        cx.execute(
+            "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (jid, "image", "queued", "comfyui", "m", "p",
+             json.dumps({"width": 768, "height": 768, "steps": 12, "seed": 1}),
+             dbmod.now(), dbmod.now()))
+        cx.commit()
+    finally:
+        cx.close()
+    cancelled = []
+    class FakeMgr:
+        async def submit_image(self, preset, params):
+            # L'utente annulla DURANTE il submit: il flip non deve sovrascrivere.
+            c2 = dbmod.connect()
+            try:
+                c2.execute("UPDATE jobs SET status='cancelling' WHERE id=?", (jid,))
+                c2.commit()
+            finally:
+                c2.close()
+            return {"job_id": "mid-r", "status": "queued", "preset": preset}
+        async def get_job(self, mid):
+            raise AssertionError("no poll atteso")
+        async def cancel_job(self, mid):
+            cancelled.append(mid)
+            return {"job_id": mid, "status": "cancelled"}
+    monkeypatch.setattr(m, "_manager", lambda: FakeMgr())
+    async def no_sleep(*a, **k):
+        return None
+    monkeypatch.setattr(_aio, "sleep", no_sleep)
+    await m._run_one_image(jid)
+    assert cancelled == ["mid-r"]
+    cx = dbmod.connect()
+    try:
+        st = cx.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()[0]
+    finally:
+        cx.close()
+    assert st == "cancelled"
+
+def test_auth_all_protected_routes_401(client):
+    from fastapi.testclient import TestClient
+    import app.main as m
+    c2 = TestClient(m.app)
+    for method, path in [
+        ("get", "/api/v1/capabilities"), ("get", "/api/v1/status"),
+        ("get", "/api/v1/jobs"), ("get", "/api/v1/jobs/x"),
+        ("get", "/api/v1/assets"), ("get", "/api/v1/assets/x"),
+        ("get", "/api/v1/projects"), ("get", "/api/v1/gpu"),
+        ("get", "/api/v1/events"),
+        ("post", "/api/v1/jobs"), ("post", "/api/v1/projects"),
+        ("post", "/api/v1/maintenance/prune"),
+        ("delete", "/api/v1/assets/x"),
+    ]:
+        r = getattr(c2, method)(path, json={} if method == "post" else None)
+        assert r.status_code == 401, (method, path, r.status_code)
+
+@pytest.mark.asyncio
+async def test_stage_missing_returns_none(client):
+    import app.main as m
+    assert await m._stage_manager_input("job-x", "nope", "1") is None
+
+def test_prune_keeps_assets_and_links(client):
+    import app.db as dbmod
+    aid = _seed_asset(client)
+    jid = _old_job(client, "failed", 40)
+    cx = dbmod.connect()
+    try:
+        cx.execute("INSERT INTO favorites(asset_id) VALUES(?)", (aid,))
+        cx.execute("INSERT INTO projects(id,name,created_at) VALUES(?,?,?)",
+                   ("prj-keep", "P", dbmod.now()))
+        cx.execute("INSERT INTO project_assets(project_id,asset_id) VALUES(?,?)",
+                   ("prj-keep", aid))
+        cx.commit()
+    finally:
+        cx.close()
+    r = client.post("/api/v1/maintenance/prune", json={"include_completed": True})
+    assert r.status_code == 200
+    assert client.get(f"/api/v1/assets/{aid}").status_code == 200
+    cx = dbmod.connect()
+    try:
+        assert cx.execute("SELECT 1 FROM favorites WHERE asset_id=?", (aid,)).fetchone()
+        assert cx.execute("SELECT 1 FROM project_assets WHERE asset_id=?", (aid,)).fetchone()
+    finally:
+        cx.close()
+
+def test_blank_prompt_422(client):
+    r = client.post("/api/v1/jobs", json={"taskType": "image", "prompt": "   "})
+    assert r.status_code == 422
+
+def test_upload_empty_422(client):
+    r = client.post("/api/v1/assets/upload", files={"f": ("e.jpg", b"", "image/jpeg")})
+    assert r.status_code == 422
+
+def test_video_480p_dims_honored(client):
+    import app.db as dbmod
+    aid = _seed_asset(client)
+    r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "x",
+                                          "asset_ids": [aid], "width": 854, "height": 480})
+    assert r.status_code == 201, r.text
+    j = r.json()
+    assert (j["width"], j["height"]) == (832, 480)
+

@@ -1,5 +1,9 @@
 # Hermes Studio — DISCOVERY (Fase A, solo lettura)
 
+> Snapshot storico del 2026-11-11, NON normativo: i §5 (video disabilitato)
+> e `h3.enabled false` (§1-2, riga 15) sono superati — vedi `docs/VIDEO_H3.md`
+> (H3 attivo dal proprietario, preset turbo verificati con render reali).
+
 Data: 2026-11-11. Server `hermes` via SSH LAN `matteo@192.168.1.6` (Tailscale SSH richiede check interattivo, non usato). Nessun restart/deploy, solo GET/lettura.
 
 ## 1. Macchina

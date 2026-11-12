@@ -47,38 +47,49 @@ def _job_row_to_out(r) -> JobOut:
         engine=r["engine"], model=r["model"], prompt=r["prompt"],
         width=params.get("width"), height=params.get("height"),
         steps=params.get("steps"), seed=params.get("seed"),
+        duration=params.get("duration"), asset_ids=params.get("asset_ids") or [],
         comfy_prompt_id=r["comfy_prompt_id"], progress=r["progress"],
         error=r["error"], outputs=json.loads(r["outputs"] or "[]"),
         created_at=db.iso(r["created_at"]), updated_at=db.iso(r["updated_at"]),
     )
 
 
+async def _recover_once() -> dict:
+    """Rimette in carreggiata i job interrotti (restart/crash).
+
+    preparing/running -> queued (reconcile via existing_mid, mai doppi submit);
+    cancelling -> cancelled. Ritorna i conteggi per log/test.
+    """
+    cx = db.connect()
+    try:
+        n1 = cx.execute(
+            "UPDATE jobs SET status='queued', updated_at=? WHERE status IN ('preparing','running')",
+            (db.now(),),
+        ).rowcount
+        n2 = cx.execute(
+            "UPDATE jobs SET status='cancelled', updated_at=? WHERE status='cancelling'",
+            (db.now(),),
+        ).rowcount
+        cx.commit()
+        return {"requeued": n1, "cancelled": n2}
+    finally:
+        cx.close()
+
+
 async def _dispatch_loop() -> None:
     """Background worker: queued -> preparing -> running -> completed/failed.
 
-    Survives app close (jobs in SQLite). On backend restart, stale
-    preparing jobs (mai sottomessi) tornano queued; running con
-    comfy_prompt_id restano running e vengono riconciliati via /history,
-    running senza prompt_id tornano queued.
+    Survives app close (jobs in SQLite). Al restart, TUTTI i job attivi
+    (preparing/running/cancelling) tornano in coda o terminali: il worker
+    non sottomette mai due volte (se esiste già un manager id lo riusa e
+    riconcilia via GET /jobs/{mid}), quindi il requeue è sempre sicuro.
     """
     from .config import DB_PATH  # noqa
     await asyncio.sleep(1.0)
-    cx = db.connect()
-    try:
-        # Recovery: preparing mai sottomessi -> queued; running orfani -> queued
-        # solo se senza prompt_id, altrimenti restano running per reconcile.
-        cx.execute(
-            "UPDATE jobs SET status='queued', updated_at=? WHERE status='preparing'",
-            (db.now(),),
-        )
-        cx.execute(
-            "UPDATE jobs SET status='queued', updated_at=? WHERE status='running' "
-            "AND (comfy_prompt_id IS NULL OR comfy_prompt_id='')",
-            (db.now(),),
-        )
-        cx.commit()
-    finally:
-        cx.close()
+    counts = await _recover_once()
+    if counts["requeued"] or counts["cancelled"]:
+        _log.info("recovery: %d requeued, %d cancelled",
+                  counts["requeued"], counts["cancelled"])
     while not _stop.is_set():
         cx = db.connect()
         try:
@@ -188,11 +199,14 @@ async def _run_one_image(job_id: str) -> None:
         prompt_text = row["prompt"]
         params = json.loads(row["params"] or "{}")
         if row["status"] == "queued":
-            cx.execute(
-                "UPDATE jobs SET status='preparing', updated_at=? WHERE id=?",
+            # Atomico: se nel frattempo è arrivato un cancel, rowcount==0 e si esce.
+            cur = cx.execute(
+                "UPDATE jobs SET status='preparing', updated_at=? WHERE id=? AND status='queued'",
                 (db.now(), job_id),
             )
             cx.commit()
+            if cur.rowcount == 0:
+                return
     finally:
         cx.close()
 
@@ -243,11 +257,23 @@ async def _run_one_image(job_id: str) -> None:
             finally:
                 for _s in staged:
                     _unstage(_s)
-            cx.execute(
-                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
+            # Flip condizionale: se nel frattempo è arrivato un cancel, non
+            # sovrascrivere 'cancelling' — cancella il job manager e chiudi.
+            cur = cx.execute(
+                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? "
+                "WHERE id=? AND status='preparing'",
                 (mid, db.now(), job_id),
             )
             cx.commit()
+            if cur.rowcount == 0:
+                try:
+                    await mgr.cancel_job(mid)
+                except Exception:
+                    pass
+                cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+                           (db.now(), job_id))
+                cx.commit()
+                return
         # Poll manager (primo run include unload LLM + boot Comfy: 5s x 360 = 30min max).
         for _ in range(360):
             await asyncio.sleep(5.0)
@@ -323,6 +349,9 @@ async def _finish_image_job(cx, job_id: str, st: dict) -> None:
     for p in sorted([x for x in paths if isinstance(x, str)], key=rank):
         pp = _P(p)
         try:
+            # Solo immagini vere: niente file arbitrari in libreria.
+            if pp.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+                continue
             if pp.is_file() and not pp.is_symlink():
                 src = pp
                 break
@@ -373,11 +402,14 @@ async def _run_one_video(job_id: str) -> None:
         existing_mid = row["comfy_prompt_id"]
         params = json.loads(row["params"] or "{}")
         if row["status"] == "queued":
-            cx.execute(
-                "UPDATE jobs SET status='preparing', updated_at=? WHERE id=?",
+            # Atomico: se nel frattempo è arrivato un cancel, rowcount==0 e si esce.
+            cur = cx.execute(
+                "UPDATE jobs SET status='preparing', updated_at=? WHERE id=? AND status='queued'",
                 (db.now(), job_id),
             )
             cx.commit()
+            if cur.rowcount == 0:
+                return
     finally:
         cx.close()
 
@@ -426,11 +458,23 @@ async def _run_one_video(job_id: str) -> None:
             finally:
                 for _s in staged:
                     _unstage(_s)
-            cx.execute(
-                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? WHERE id=?",
+            # Flip condizionale: se nel frattempo è arrivato un cancel, non
+            # sovrascrivere 'cancelling' — cancella il job manager e chiudi.
+            cur = cx.execute(
+                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? "
+                "WHERE id=? AND status='preparing'",
                 (mid, db.now(), job_id),
             )
             cx.commit()
+            if cur.rowcount == 0:
+                try:
+                    await mgr.cancel_job(mid)
+                except Exception:
+                    pass
+                cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
+                           (db.now(), job_id))
+                cx.commit()
+                return
         # Poll manager (render lunghi: 10s x 540 = 90min max, seriale come le immagini).
         for _ in range(540):
             await asyncio.sleep(10.0)
@@ -509,6 +553,11 @@ async def _finish_video_job(cx, job_id: str, st: dict) -> None:
     for p in sorted([x for x in paths if isinstance(x, str)], key=rank):
         pp = _P(p)
         try:
+            # Allowlist estensioni + niente symlink: anche se il manager è
+            # locale e fidato, non si copia mai roba arbitraria in libreria.
+            if pp.suffix.lower() not in (".mp4", ".webm", ".mov", ".mkv", ".m4v",
+                                         ".png", ".jpg", ".jpeg", ".webp"):
+                continue
             if pp.is_file() and not pp.is_symlink():
                 src = pp
                 break
@@ -517,6 +566,16 @@ async def _finish_video_job(cx, job_id: str, st: dict) -> None:
     if src is None:
         cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
                    ("manager done ma nessun file video", db.now(), job_id))
+        cx.commit()
+        return
+    # Se nel frattempo è arrivato un cancel, non convertire per niente.
+    cc = db.connect()
+    try:
+        _cur = cc.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    finally:
+        cc.close()
+    if _cur and _cur["status"] in ("cancelling", "cancelled"):
+        cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?", (db.now(), job_id))
         cx.commit()
         return
     # Copia in asset store (mp4 diretto; APNG/altro convertito per Android).
@@ -529,7 +588,9 @@ async def _finish_video_job(cx, job_id: str, st: dict) -> None:
         await asyncio.to_thread(_sh.copy2, src, dest)
     else:
         rel = f"{job_id}_video.mp4"
-        dest = ASSETS_DIR / safe_name(rel)
+        dest = (ASSETS_DIR / safe_name(rel)).resolve()
+        assert str(dest).startswith(str(ASSETS_DIR.resolve())), "path traversal blocked"
+        dest.parent.mkdir(parents=True, exist_ok=True)
         import subprocess as _sp
         try:
             r = await asyncio.to_thread(
@@ -576,6 +637,12 @@ async def lifespan(app: FastAPI):
     _stop.set()
     if _worker_task:
         _worker_task.cancel()
+        try:
+            await _worker_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            _log.exception("worker: errore in shutdown")
 
 app = FastAPI(title="Hermes Studio", version=BACKEND_VERSION, lifespan=lifespan)
 # Private LAN client (native app). No wildcard CORS for browsers; app is native.
@@ -664,8 +731,9 @@ async def gpu(_: None = Depends(require_auth)):
     if r.returncode != 0:
         raise HTTPException(503, f"nvidia-smi errore: {(r.stderr or '')[:200]}")
     out: list[GpuOut] = []
-    for line in (r.stdout or "").splitlines():
-        parts = [p.strip() for p in line.split(",")]
+    import csv as _csv
+    for parts in _csv.reader((r.stdout or "").splitlines()):
+        parts = [p.strip() for p in parts]
         if len(parts) < 5:
             continue
         try:
@@ -720,8 +788,25 @@ def _video_preset_for(w: int, h: int) -> tuple[str, int, int]:
 
 @app.post("/api/v1/jobs", response_model=JobOut, status_code=201)
 async def create_job(body: JobCreate, _: None = Depends(require_auth)):
+    prompt = body.prompt.strip()
+    if not prompt:
+        raise HTTPException(422, "prompt vuoto")
     is_video = body.taskType.value == "video"
     engine = body.engine or "comfyui"
+    cx = db.connect()
+    try:
+        # Fail-fast: gli asset di partenza devono esistere (e per i video
+        # devono essere immagini), altrimenti 404/422 subito invece di un
+        # ciclo seriale sprecato nel worker.
+        if body.asset_ids:
+            for aid in body.asset_ids[:8]:
+                r = cx.execute("SELECT kind FROM assets WHERE id=?", (aid,)).fetchone()
+                if not r:
+                    raise HTTPException(404, f"asset di partenza non trovato: {aid}")
+                if is_video and r["kind"] != "image":
+                    raise HTTPException(422, f"lo start frame deve essere un'immagine: {aid}")
+    finally:
+        cx.close()
     if is_video:
         if not body.asset_ids:
             raise HTTPException(422, "video richiede asset_ids con almeno 1 immagine di partenza")
@@ -821,14 +906,18 @@ async def cancel_job(jid: str, _: None = Depends(require_auth)):
 @app.get("/api/v1/events")
 async def events(_: None = Depends(require_auth)):
     async def gen():
-        cx = db.connect()
+        last = 0.0
+        beats = 0
         try:
-            last = 0.0
-            beats = 0
             while True:
-                rows = cx.execute(
-                    "SELECT id,status,updated_at FROM jobs WHERE updated_at>? ORDER BY updated_at LIMIT 50",
-                    (last,)).fetchall()
+                # Connessione breve per ciclo: niente handle aperti per ore.
+                cx = db.connect()
+                try:
+                    rows = cx.execute(
+                        "SELECT id,status,updated_at FROM jobs WHERE updated_at>? ORDER BY updated_at LIMIT 50",
+                        (last,)).fetchall()
+                finally:
+                    cx.close()
                 for r in rows:
                     last = max(last, r["updated_at"])
                     yield f"data: {json.dumps({'id': r['id'], 'status': r['status']})}\n\n"
@@ -840,11 +929,6 @@ async def events(_: None = Depends(require_auth)):
                 await asyncio.sleep(2.0)
         except asyncio.CancelledError:
             pass
-        finally:
-            try:
-                cx.close()
-            except Exception:
-                pass
     # no-cache/no-buffer: i proxy intermedi (es. tailscale serve) non devono
     # accumulare gli eventi, altrimenti l'app li vede in ritardo o mai.
     return StreamingResponse(
@@ -855,40 +939,55 @@ async def events(_: None = Depends(require_auth)):
 
 @app.post("/api/v1/assets/upload")
 async def upload_asset(f: UploadFile = File(...), _: None = Depends(require_auth)):
-    # Streaming con cap: niente buffering illimitato prima del check 25MB.
+    # Streaming su disco con cap: mai tutto in RAM (DoS concorrente).
     limit = MAX_UPLOAD_MB * 1024 * 1024
-    chunks: list[bytes] = []
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    staging = ASSETS_DIR / (safe_name(db.new_id("upl")) + ".part")
     total = 0
-    while True:
-        chunk = await f.read(1024 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > limit:
-            raise HTTPException(413, f"file oltre {MAX_UPLOAD_MB} MB")
-        chunks.append(chunk)
-    data = b"".join(chunks)
-    if len(data) == 0:
-        raise HTTPException(415, "file vuoto")
-    head = data[:16]
+    head = b""
+    try:
+        with open(staging, "wb") as fh:
+            while True:
+                chunk = await f.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > limit:
+                    raise HTTPException(413, f"file oltre {MAX_UPLOAD_MB} MB")
+                if len(head) < 16:
+                    head = (head + chunk)[:16]
+                fh.write(chunk)
+    except HTTPException:
+        try:
+            staging.unlink()
+        except OSError:
+            pass
+        raise
+    if total == 0:
+        try:
+            staging.unlink()
+        except OSError:
+            pass
+        raise HTTPException(422, "file vuoto")
     if head.startswith(b"\xff\xd8\xff"):
         ext = ".jpg"
     elif head.startswith(b"\x89PNG"):
         ext = ".png"
-    elif head.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
+    elif head.startswith(b"RIFF") and total >= 12 and head[8:12] == b"WEBP":
         ext = ".webp"
     else:
+        try:
+            staging.unlink()
+        except OSError:
+            pass
         raise HTTPException(415, "solo JPEG/PNG/WebP")
     # Upload indicizzati: diventano subito elementi di libreria (job_id NULL),
-    # usabili come start frame / riferimento. UPLOADS_DIR resta solo per i .part.
+    # usabili come start frame / riferimento.
     aid = db.new_id("ast")
     rel = safe_name(aid) + ext
     dest = (ASSETS_DIR / rel).resolve()
     assert str(dest).startswith(str(ASSETS_DIR.resolve())), "path traversal blocked"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    tmp.write_bytes(data)
-    tmp.replace(dest)
+    staging.replace(dest)
     w = h = None
     try:
         from PIL import Image as _I
@@ -906,7 +1005,7 @@ async def upload_asset(f: UploadFile = File(...), _: None = Depends(require_auth
     finally:
         cx.close()
     await asyncio.to_thread(make_thumb, dest, aid)
-    return {"asset_upload_id": aid, "asset_id": aid, "path": rel, "bytes": len(data)}
+    return {"asset_upload_id": aid, "asset_id": aid, "path": rel, "bytes": total}
 
 
 @app.get("/api/v1/assets", response_model=list[AssetOut])
@@ -971,7 +1070,7 @@ def _asset_path(aid: str) -> Path:
 @app.get("/api/v1/assets/{aid}/download")
 async def download_asset(aid: str, _: None = Depends(require_auth)):
     p = _asset_path(aid)
-    if not p.exists():
+    if not p.is_file() or p.is_symlink():
         raise HTTPException(404, "file missing")
     return FileResponse(str(p))
 
@@ -979,11 +1078,11 @@ async def download_asset(aid: str, _: None = Depends(require_auth)):
 @app.get("/api/v1/assets/{aid}/thumbnail")
 async def thumb_asset(aid: str, _: None = Depends(require_auth)):
     t = THUMBS_DIR / (safe_name(aid) + ".jpg")
-    if not t.exists():
+    if not t.is_file() or t.is_symlink():
         src = _asset_path(aid)
-        if not src.exists():
+        if not src.is_file() or src.is_symlink():
             raise HTTPException(404, "file missing")
-        t2 = make_thumb(src, aid)
+        t2 = await asyncio.to_thread(make_thumb, src, aid)
         if not t2:
             raise HTTPException(404, "no thumbnail")
         t = t2
@@ -1054,7 +1153,8 @@ async def prune(body: PruneIn, _: None = Depends(require_auth)):
     statuses = ["failed", "cancelled"]
     if body.include_completed:
         statuses.append("completed")
-    cutoff = db.now() - body.older_than_days * 86400
+    # Grazia minima 1h comunque: un job appena fallito resta leggibile in app.
+    cutoff = db.now() - max(body.older_than_days * 86400, 3600)
     deleted_jobs = 0
     cx = db.connect()
     try:
