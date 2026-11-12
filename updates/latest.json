@@ -1,11 +1,11 @@
 {
-  "versionCode": 28,
-  "versionName": "0.1.1-gh28",
-  "tagName": "studio-28",
-  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-28/HermesStudio-28.apk",
-  "assetSize": 22470268,
-  "sha256": "bb83fe36bdc8cd3b591e20c5cacfa3f62a39cc066ff67a3fd6cec4c34bd48fe7",
-  "signature": "MEQCIHnCGFGlkxeDajsRD6KrSFQI5vyahS8I32Ke3qotsblFAiBfn37ayno7/nIeXOY1I0FLPn8FN/NHbZg30WhUf/RUGA==",
-  "publishedAt": "2026-11-12T13:27:54Z",
-  "notes": ["Audit-2 fix: terminali condizionali, nav/share Main, MIME reali, Job model, docs", "Fix: 480p onorato (preset solo da orientamento) + HttpUrl deprecato", "Fix: import awaitAll, auth-test GET, cancel-running realistico", "Fix: parentesi associate + ruff F401", "Fix: resolution state, mappe nullable, ruff F841", "Audit-1 fix batch 1: backend robustezza (recovery, race, SSE, upload, sanitize, prune)"]
+  "versionCode": 29,
+  "versionName": "0.1.1-gh29",
+  "tagName": "studio-29",
+  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-29/HermesStudio-29.apk",
+  "assetSize": 22470272,
+  "sha256": "bf9ce94dcbf4420cb57054368994a6f1d8db4ed0a4b8084c933a33ea6a755d77",
+  "signature": "",
+  "publishedAt": "2026-11-12T19:21:25Z",
+  "notes": ["Fix: loader dichiarato prima dell'effect", "Perf: cache sessione stale-while-revalidate + fetch paralleli ovunque", "Audit-2 fix: terminali condizionali, nav/share Main, MIME reali, Job model, docs", "Fix: 480p onorato (preset solo da orientamento) + HttpUrl deprecato", "Fix: import awaitAll, auth-test GET, cancel-running realistico", "Fix: parentesi associate + ruff F401"]
 }
