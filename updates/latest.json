@@ -1,11 +1,11 @@
 {
-  "versionCode": 22,
-  "versionName": "0.1.1-gh22",
-  "tagName": "studio-22",
-  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-22/HermesStudio-22.apk",
-  "assetSize": 19011117,
-  "sha256": "3b8ca87ee9ec474a2c566e76e5e8486e51b487f0724fdbaad6f11b86a83823f8",
-  "signature": "MEYCIQCl3yDhgrmzQGiQjmenF/QghggcxWimWkTTl37ND2uyMgIhANfd9ZHClF8/o6FfIa4EAigRhtY8OrtkQX3pR1NErTdK",
-  "publishedAt": "2026-11-11T22:55:32Z",
+  "versionCode": 23,
+  "versionName": "0.1.1-gh23",
+  "tagName": "studio-23",
+  "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-23/HermesStudio-23.apk",
+  "assetSize": 22271702,
+  "sha256": "2e1ef36fba7e747823f56b3c904d9b182e05602ab136a0a42fa40651e94e1f32",
+  "signature": "",
+  "publishedAt": "2026-11-12T09:54:29Z",
   "notes": ["V1 + auto-update in-app"]
 }
