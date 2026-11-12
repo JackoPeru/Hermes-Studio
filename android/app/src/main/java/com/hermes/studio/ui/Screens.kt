@@ -1703,6 +1703,11 @@ fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var player by remember { mutableStateOf<androidx.media3.exoplayer.ExoPlayer?>(null) }
+    var playing by remember { mutableStateOf(false) }
+    var ended by remember { mutableStateOf(false) }
+    var posMs by remember { mutableStateOf(0L) }
+    var durMs by remember { mutableStateOf(0L) }
+    var ready by remember { mutableStateOf(false) }
     DisposableEffect(asset.id) {
         var p: androidx.media3.exoplayer.ExoPlayer? = null
         val job = scope.launch {
@@ -1715,11 +1720,21 @@ fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier
                 if (tok.isNotBlank()) dsf.setDefaultRequestProperties(mapOf("Authorization" to "Bearer $tok"))
                 val source = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(dsf)
                     .createMediaSource(androidx.media3.common.MediaItem.fromUri(url))
-                p = androidx.media3.exoplayer.ExoPlayer.Builder(ctx).build().also {
-                    it.setMediaSource(source)
-                    it.prepare()
-                    it.playWhenReady = true
-                    player = it
+                p = androidx.media3.exoplayer.ExoPlayer.Builder(ctx).build().also { exo ->
+                    exo.addListener(object : androidx.media3.common.Player.Listener {
+                        override fun onIsPlayingChanged(v: Boolean) { playing = v }
+                        override fun onPlaybackStateChanged(s: Int) {
+                            ready = s == androidx.media3.common.Player.STATE_READY
+                            ended = s == androidx.media3.common.Player.STATE_ENDED
+                            if (s == androidx.media3.common.Player.STATE_READY) {
+                                durMs = exo.duration.coerceAtLeast(0L)
+                            }
+                        }
+                    })
+                    exo.setMediaSource(source)
+                    exo.prepare()
+                    exo.playWhenReady = true
+                    player = exo
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
@@ -1732,24 +1747,71 @@ fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier
             if (player === p) player = null
         }
     }
-    val current = player
-    if (current != null) {
-        androidx.compose.ui.viewinterop.AndroidView(
-            factory = { c ->
-                androidx.media3.ui.PlayerView(c).apply {
-                    this.player = current
-                    useController = true
-                    setShowPreviousButton(false)
-                    setShowNextButton(false)
-                    setShowFullscreenButton(false)
-                }
-            },
-            modifier = modifier.background(Color.Black)
-        )
-    } else {
-        Box(modifier.background(Color(0xFF141428)), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = AccentV, modifier = Modifier.size(40.dp))
+    // Avanzamento tempo mentre riproduce.
+    LaunchedEffect(playing, player) {
+        while (playing) {
+            kotlinx.coroutines.delay(500)
+            player?.let { posMs = it.currentPosition.coerceAtLeast(0L) }
         }
     }
+    val current = player
+    Box(modifier.background(Color.Black)) {
+        if (current != null) {
+            androidx.compose.ui.viewinterop.AndroidView(
+                factory = { c ->
+                    androidx.media3.ui.PlayerView(c).apply {
+                        this.player = current
+                        useController = false
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(Modifier.fillMaxSize().background(Color(0xFF141428)), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = AccentV, modifier = Modifier.size(40.dp))
+            }
+        }
+        // Controller nostro: solo controlli veri (play/pausa + seek + tempi).
+        if (current != null && ready) {
+            Surface(
+                shape = CircleShape, color = Color.Black.copy(alpha = 0.55f),
+                modifier = Modifier.align(Alignment.Center),
+                onClick = {
+                    if (ended) current.seekTo(0)
+                    if (playing) current.pause() else current.play()
+                }
+            ) {
+                Icon(
+                    if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    if (playing) "Pausa" else "Riproduci",
+                    tint = Color.White, modifier = Modifier.padding(14.dp).size(34.dp)
+                )
+            }
+            Column(
+                Modifier.align(Alignment.BottomStart).fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.7f))))
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                if (durMs > 0) {
+                    Slider(
+                        value = posMs.toFloat().coerceIn(0f, durMs.toFloat()),
+                        onValueChange = { posMs = it.toLong(); current.seekTo(it.toLong()) },
+                        valueRange = 0f..durMs.toFloat(),
+                        colors = SliderDefaults.colors(thumbColor = AccentV, activeTrackColor = AccentV)
+                    )
+                }
+                Text(
+                    "${fmtMs(posMs)} / ${fmtMs(durMs)}",
+                    color = Color.White, fontSize = 12.sp, maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+private fun fmtMs(ms: Long): String {
+    if (ms < 0) return "0:00"
+    val s = ms / 1000
+    return "%d:%02d".format(s / 60, s % 60)
 }
 
