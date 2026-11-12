@@ -594,7 +594,6 @@ def test_upload_empty_422(client):
     assert r.status_code == 422
 
 def test_video_480p_dims_honored(client):
-    import app.db as dbmod
     aid = _seed_asset(client)
     r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "x",
                                           "asset_ids": [aid], "width": 854, "height": 480})

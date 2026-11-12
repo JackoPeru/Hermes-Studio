@@ -211,7 +211,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
             val al = api.assets()
             if (al != assets) {
                 assets = al
-                urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+                urls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
             }
         } catch (_: Exception) {}
     }
@@ -549,7 +549,7 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             val al = repo.api().assets("image").take(6)
             recent = al
             loader = repo.imageLoader()
-            recentUrls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            recentUrls = al.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
         } catch (_: Exception) {}
     }
     LaunchedEffect(Unit) { refreshRecent() }
@@ -842,10 +842,10 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             val imgs = api.assets("image").take(12)
             images = imgs
             loader = repo.imageLoader()
-            imgUrls = imgs.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            imgUrls = imgs.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
             val vids = api.assets("video").take(6)
             recentVideos = vids
-            videoUrls = vids.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            videoUrls = vids.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
             selectedIds = selectedIds.filter { id -> imgs.any { it.id == id } }.take(maxRefs()).toSet()
         } catch (_: Exception) {}
     }
@@ -1096,7 +1096,7 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
             val all = allD.await()
             if (all != assets) {
                 assets = all
-                urls = all.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+                urls = all.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
             }
             favIds = favD.await()
             projects = prjD.await()
@@ -1780,7 +1780,7 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
                 }.awaitAll().filterNotNull()
             }
             outAssets = found
-            outUrls = found.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            outUrls = found.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
         } catch (e: Exception) { msg = "Errore: ${e.message}" }
     }
     LaunchedEffect(jobId) { scope.launch(kotlinx.coroutines.Dispatchers.IO) { load() } }
