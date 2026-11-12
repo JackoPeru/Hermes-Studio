@@ -5,7 +5,7 @@
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-24/HermesStudio-24.apk",
   "assetSize": 22437468,
   "sha256": "286eba3c22a443cb5c76e663ce0259ccee23119c324133ccbe3678ba3c61be20",
-  "signature": "",
+  "signature": "MEUCIQDZYDLAxA4QraucHEF9usn5pD6EHd/WCEQtc0ZYOa33WgIgPSCllLfnsoej17XinnYSSndhen0uwY2FxiBjoCJYmHY=",
   "publishedAt": "2026-11-12T10:20:36Z",
   "notes": ["V1 + auto-update in-app"]
 }
