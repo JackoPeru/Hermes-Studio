@@ -15,7 +15,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.stickyHeader
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -1165,9 +1164,9 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
                 }
             }
         }
-        stickyHeader {
+        item(span = { GridItemSpan(maxLineSpan) }) {
             LazyRow(
-                modifier = Modifier.fillMaxWidth().background(Bg).padding(vertical = 6.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(filters, key = { it.first }) { (f, ic) ->
