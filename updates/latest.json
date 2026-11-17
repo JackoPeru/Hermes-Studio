@@ -5,7 +5,7 @@
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-30/HermesStudio-30.apk",
   "assetSize": 22519420,
   "sha256": "ecbe6d2468adfbdef22709c3b828a358a23b07cd40663f4c57423ee1b96aa032",
-  "signature": "",
+  "signature": "MEYCIQDjpI0ObKqLPy6DyGK2fsOst5XIM76EXeJNNrmP/Xh9CgIhAMkX0ZqQbo9bbjt3Y4w/gTJEChjA9ZO8macpWxh3wffd",
   "publishedAt": "2026-11-17T20:42:04Z",
   "notes": ["Home: barra indeterminata durante il rendering (niente 50% finto)", "Crea: 10 riferimenti reali, sorgente telefono/server, job live con fase manager, H3 sbloccato", "Fix: loader dichiarato prima dell'effect", "Perf: cache sessione stale-while-revalidate + fetch paralleli ovunque"]
 }
