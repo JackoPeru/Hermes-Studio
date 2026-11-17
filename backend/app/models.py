@@ -22,6 +22,7 @@ class CapabilityTask(BaseModel):
     max_width: int | None = None
     max_height: int | None = None
     supports_reference: bool = False
+    max_refs: int = 0
     notes: str = ""
 
 class CapabilitiesOut(BaseModel):
@@ -59,6 +60,7 @@ class JobOut(BaseModel):
     asset_ids: list[str] = Field(default_factory=list)
     comfy_prompt_id: str | None = None
     progress: float | None = None
+    phase: str | None = None
     error: str | None = None
     outputs: list[str] = Field(default_factory=list)
     created_at: str

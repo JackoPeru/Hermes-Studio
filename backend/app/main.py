@@ -49,6 +49,7 @@ def _job_row_to_out(r) -> JobOut:
         steps=params.get("steps"), seed=params.get("seed"),
         duration=params.get("duration"), asset_ids=params.get("asset_ids") or [],
         comfy_prompt_id=r["comfy_prompt_id"], progress=r["progress"],
+        phase=r["phase"] if "phase" in r.keys() else None,
         error=r["error"], outputs=json.loads(r["outputs"] or "[]"),
         created_at=db.iso(r["created_at"]), updated_at=db.iso(r["updated_at"]),
     )
@@ -64,7 +65,7 @@ async def _recover_once() -> dict:
     cx = db.connect()
     try:
         n1 = cx.execute(
-            "UPDATE jobs SET status='queued', updated_at=? WHERE status IN ('preparing','running')",
+            "UPDATE jobs SET status='queued', phase=NULL, updated_at=? WHERE status IN ('preparing','running')",
             (db.now(),),
         ).rowcount
         mids = [r[0] for r in cx.execute(
@@ -236,7 +237,7 @@ async def _run_one_image(job_id: str) -> None:
             }
             staged: list[str] = []
             if preset == "edit_image":
-                aids = (params.get("asset_ids") or [])[:4]
+                aids = (params.get("asset_ids") or [])[:10]
                 if not aids:
                     cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
                                ("edit richiede asset_ids con almeno 1 immagine di partenza", db.now(), job_id))
@@ -270,7 +271,7 @@ async def _run_one_image(job_id: str) -> None:
             # Flip condizionale: se nel frattempo è arrivato un cancel, non
             # sovrascrivere 'cancelling' — cancella il job manager e chiudi.
             cur = cx.execute(
-                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? "
+                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, phase='submitted', updated_at=? "
                 "WHERE id=? AND status='preparing'",
                 (mid, db.now(), job_id),
             )
@@ -313,13 +314,18 @@ async def _run_one_image(job_id: str) -> None:
             except Exception:
                 continue
             mstatus = str(st.get("status") or "")
+            mphase = str(st.get("phase") or "")
             try:
                 prog = float(st.get("progress") or 0)
             except (TypeError, ValueError):
                 prog = 0.0
             if prog > 0:
-                cx.execute("UPDATE jobs SET progress=?, updated_at=? WHERE id=?",
-                           (max(0.05, min(0.99, prog)), db.now(), job_id))
+                cx.execute("UPDATE jobs SET progress=?, phase=?, updated_at=? WHERE id=?",
+                           (max(0.05, min(0.99, prog)), mphase or None, db.now(), job_id))
+                cx.commit()
+            elif mphase:
+                cx.execute("UPDATE jobs SET phase=?, updated_at=? WHERE id=?",
+                           (mphase, db.now(), job_id))
                 cx.commit()
             if mstatus == "done":
                 await _finish_image_job(cx, job_id, st)
@@ -480,7 +486,7 @@ async def _run_one_video(job_id: str) -> None:
             # Flip condizionale: se nel frattempo è arrivato un cancel, non
             # sovrascrivere 'cancelling' — cancella il job manager e chiudi.
             cur = cx.execute(
-                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, updated_at=? "
+                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, phase='submitted', updated_at=? "
                 "WHERE id=? AND status='preparing'",
                 (mid, db.now(), job_id),
             )
@@ -522,13 +528,18 @@ async def _run_one_video(job_id: str) -> None:
             except Exception:
                 continue
             mstatus = str(st.get("status") or "")
+            mphase = str(st.get("phase") or "")
             try:
                 prog = float(st.get("progress") or 0)
             except (TypeError, ValueError):
                 prog = 0.0
             if prog > 0:
-                cx.execute("UPDATE jobs SET progress=?, updated_at=? WHERE id=?",
-                           (max(0.05, min(0.99, prog)), db.now(), job_id))
+                cx.execute("UPDATE jobs SET progress=?, phase=?, updated_at=? WHERE id=?",
+                           (max(0.05, min(0.99, prog)), mphase or None, db.now(), job_id))
+                cx.commit()
+            elif mphase:
+                cx.execute("UPDATE jobs SET phase=?, updated_at=? WHERE id=?",
+                           (mphase, db.now(), job_id))
                 cx.commit()
             if mstatus == "done":
                 await _finish_video_job(cx, job_id, st)
@@ -695,8 +706,8 @@ async def capabilities(_: None = Depends(require_auth)):
                            notes="Workflow qwen-t2i v1 (euler/simple, cfg 1.0). Batch via coda."),
             CapabilityTask(task="image-to-image", engine="comfyui", model="qwen-image-2.1-edit",
                            enabled=True, max_width=2560, max_height=2560,
-                           notes="Preset manager edit_image (Qwen edit, input staged). Richiede immagine di partenza.",
-                           supports_reference=True),
+                           notes="Preset manager edit_image (Qwen edit, input staged). Fino a 10 immagini di riferimento: più riferimenti = più VRAM e tempo.",
+                           supports_reference=True, max_refs=10),
         ],
         video=[
             CapabilityTask(task="text-to-video", engine="comfyui", model="minimax-h3",
@@ -829,7 +840,7 @@ async def create_job(body: JobCreate, _: None = Depends(require_auth)):
         # devono essere immagini), altrimenti 404/422 subito invece di un
         # ciclo seriale sprecato nel worker.
         if body.asset_ids:
-            for aid in body.asset_ids[:8]:
+            for aid in body.asset_ids[:10]:
                 r = cx.execute("SELECT kind FROM assets WHERE id=?", (aid,)).fetchone()
                 if not r:
                     raise HTTPException(404, f"asset di partenza non trovato: {aid}")

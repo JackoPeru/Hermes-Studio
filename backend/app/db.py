@@ -57,6 +57,7 @@ _EXPECTED_COLUMNS: list[tuple[str, str, str]] = [
     ("jobs", "idempotency_key", "TEXT UNIQUE"),
     ("jobs", "comfy_prompt_id", "TEXT"),
     ("jobs", "progress", "REAL"),
+    ("jobs", "phase", "TEXT"),
     ("jobs", "error", "TEXT"),
     ("jobs", "outputs", "TEXT NOT NULL DEFAULT '[]'"),
     ("assets", "job_id", "TEXT"),

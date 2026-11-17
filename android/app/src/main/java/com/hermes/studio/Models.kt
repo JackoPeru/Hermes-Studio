@@ -75,6 +75,7 @@ data class Job(
     val asset_ids: List<String> = emptyList(),
     val comfy_prompt_id: String? = null,
     val progress: Double? = null,
+    val phase: String? = null,
     val error: String? = null,
     val outputs: List<String> = emptyList(),
     val created_at: String = "",

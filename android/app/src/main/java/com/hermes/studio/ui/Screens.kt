@@ -190,6 +190,126 @@ fun formatDuration(s: Double?): String? {
     return "%d:%02d".format(total / 60, total % 60)
 }
 
+// ---------- Job live: segui la generazione senza uscire da Crea ----------
+
+fun phaseLabel(j: Job): String = when {
+    j.status == "queued" -> "In coda"
+    j.status == "preparing" -> "Preparazione file"
+    j.status == "cancelling" -> "Annullamento"
+    j.status == "cancelled" -> "Annullato"
+    j.status == "failed" -> "Fallito"
+    j.status == "completed" -> "Completato"
+    j.phase == "submitted" -> "Accodato al manager"
+    j.phase == "executing" -> "Rendering in corso"
+    j.phase == "saving" -> "Salvataggio"
+    j.phase == "loading" || j.phase == "vram" -> "Carico modello"
+    else -> "Rendering"
+}
+
+private fun elapsedLabel(createdIso: String, nowMs: Long): String? {
+    val start = runCatching { java.time.OffsetDateTime.parse(createdIso).toInstant().toEpochMilli() }.getOrNull() ?: return null
+    val s = ((nowMs - start) / 1000).coerceAtLeast(0)
+    return if (s < 60) "${s}s" else "${s / 60}m ${s % 60}s"
+}
+
+/**
+ * Card che segue i job nati da questa schermata: fase reale dal manager,
+ * barra indeterminata quando il manager non riporta i passi (niente 50% finto),
+ * risultati cliccabili appena pronti.
+ */
+@Composable
+fun LiveJobsCard(
+    jobs: List<Job>,
+    assets: Map<String, Asset>,
+    urlFor: (String) -> String?,
+    loader: coil.ImageLoader?,
+    onOpenAsset: (String) -> Unit,
+    onCancel: (String) -> Unit,
+) {
+    if (jobs.isEmpty()) return
+    val activeStates = setOf("queued", "preparing", "running", "cancelling")
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(jobs) {
+        while (jobs.any { it.status in activeStates }) {
+            kotlinx.coroutines.delay(1000)
+            nowMs = System.currentTimeMillis()
+        }
+    }
+    Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, AccentV.copy(alpha = 0.4f))) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.AutoAwesome, null, tint = AccentV, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("La tua generazione", fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (jobs.any { it.status in activeStates }) Text("· Live", color = Good, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+            jobs.forEach { j ->
+                val active = j.status in activeStates
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatusPill(phaseLabel(j), j.status == "completed")
+                        Spacer(Modifier.width(8.dp))
+                        elapsedLabel(j.created_at, nowMs)?.let { Text(it, color = Muted, fontSize = 12.sp) }
+                        Spacer(Modifier.weight(1f))
+                        if (active) {
+                            TextButton(onClick = { onCancel(j.id) }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                                Text("Annulla", color = Warn, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                    Text(j.prompt.take(90), color = Muted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (active) {
+                        // executing/saving: il manager non riporta i passi → barra indeterminata onesta.
+                        if (j.phase == "executing" || j.phase == "saving") {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                                color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                progress = { ((j.progress ?: 0.02).toFloat()).coerceIn(0.01f, 1f) },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                                color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
+                            )
+                        }
+                    }
+                    if (!j.error.isNullOrBlank()) {
+                        Text(j.error!!.take(180), color = Warn, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (j.status == "completed" && j.outputs.isNotEmpty()) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(j.outputs, key = { it }) { aid ->
+                                val a = assets[aid]
+                                val url = urlFor(aid)
+                                Box(
+                                    Modifier.size(120.dp, 120.dp).clip(RoundedCornerShape(12.dp))
+                                        .background(Bg)
+                                        .clickable { onOpenAsset("asset/$aid") }
+                                ) {
+                                    if (url != null && loader != null) {
+                                        AsyncImage(
+                                            model = rememberImgReq(url, loader), imageLoader = loader,
+                                            contentDescription = aid, modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                    if (a?.kind == "video") {
+                                        Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.55f), modifier = Modifier.align(Alignment.Center)) {
+                                            Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.padding(6.dp).size(22.dp))
+                                        }
+                                    } else {
+                                        Icon(Icons.Filled.OpenInFull, null, tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ---------- Home (mockup 01) ----------
 
 @Composable
@@ -445,8 +565,10 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
             SectionHeader(Icons.Filled.AutoAwesome, "Modelli disponibili")
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                val img = caps?.image?.firstOrNull()
-                val vid = caps?.video?.firstOrNull()
+                val img = caps?.image?.firstOrNull { it.enabled } ?: caps?.image?.firstOrNull()
+                // H3: il primo task in lista è text-to-video (senza preset, quindi
+                // "Disabilitato"), ma image-to-video è attivo. Mostra quello vero.
+                val vid = caps?.video?.firstOrNull { it.enabled } ?: caps?.video?.firstOrNull()
                 Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, AccentV.copy(alpha = 0.35f)), modifier = Modifier.weight(1f)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(CtaGradient), contentAlignment = Alignment.Center) {
@@ -504,7 +626,7 @@ fun CreateScreen(
             )
         }
         if (tab == 0) {
-            CreateImageScreen(repo, initialPrompt = initialPrompt, showHeader = false)
+            CreateImageScreen(repo, initialPrompt = initialPrompt, showHeader = false, onOpenAsset = onOpenAsset)
         } else {
             CreateVideoScreen(repo, onOpenAsset = onOpenAsset, showHeader = false)
         }
@@ -515,8 +637,15 @@ fun CreateScreen(
 
 data class StylePreset(val key: String, val label: String, val icon: ImageVector)
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (() -> Unit)? = null, showHeader: Boolean = true) {
+fun CreateImageScreen(
+    repo: StudioRepo,
+    initialPrompt: String? = null,
+    onDone: (() -> Unit)? = null,
+    showHeader: Boolean = true,
+    onOpenAsset: (String) -> Unit = {}
+) {
     val scope = rememberCoroutineScope()
     var prompt by remember(initialPrompt) { mutableStateOf(initialPrompt ?: "") }
     var preset by remember { mutableStateOf("cinematico") }
@@ -524,11 +653,22 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
     var resolution by remember { mutableStateOf("") }
     var count by remember { mutableStateOf(1) }
     var state by remember { mutableStateOf("Pronto") }
-    // Fino a 2 riferimenti (limite reale del template Qwen edit).
+    // Fino a 10 riferimenti: il nodo Qwen 2.1 accetta image_1..image_16,
+    // template e manager ora ne collegano 10 (oltre: serve più VRAM).
+    val maxRefs = 10
     var refIds by remember { mutableStateOf(setOf<String>()) }
     var recent by remember { mutableStateOf(repo.memAssets?.filter { it.kind != "video" }?.take(6) ?: emptyList()) }
     var recentUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
+    // Sorgenti riferimenti: telefono (upload) o libreria del server.
+    var serverOpen by remember { mutableStateOf(false) }
+    var serverImages by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var serverUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
+    // Job lanciati da qui: seguiti in schermata, senza passare dalla Home.
+    var tracked by remember { mutableStateOf<List<String>>(emptyList()) }
+    var liveJobs by remember { mutableStateOf<List<Job>>(emptyList()) }
+    var resultAssets by remember { mutableStateOf<Map<String, Asset>>(emptyMap()) }
+    var resultUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     // URL derivate (anche da cache): i riferimenti si vedono subito.
     LaunchedEffect(recent, loader) {
         loader ?: return@LaunchedEffect
@@ -539,6 +679,42 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
                 recent.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
             }
         }
+    }
+    LaunchedEffect(serverOpen) {
+        if (!serverOpen) return@LaunchedEffect
+        try {
+            val all = repo.api().assets("image")
+            serverImages = all
+            loader = repo.imageLoader()
+            serverUrls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                all.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            }
+        } catch (_: Exception) {}
+    }
+    // Poll leggero dei job di questa schermata: 2s finché qualcuno è attivo.
+    LaunchedEffect(tracked) {
+        if (tracked.isEmpty()) return@LaunchedEffect
+        while (true) {
+            val js = tracked.mapNotNull { id ->
+                runCatching { repo.api().job(id) }.getOrNull()
+            }
+            if (js.isNotEmpty()) liveJobs = js
+            if (js.size == tracked.size && js.all { it.status in setOf("completed", "failed", "cancelled") }) break
+            kotlinx.coroutines.delay(2000)
+        }
+    }
+    // Asset dei risultati: dettagli + URL per le miniature in schermata.
+    LaunchedEffect(liveJobs) {
+        val outIds = liveJobs.filter { it.status == "completed" }.flatMap { it.outputs }.distinct()
+        val missing = outIds.filter { !resultAssets.containsKey(it) }
+        if (missing.isEmpty()) return@LaunchedEffect
+        try {
+            val fetched = missing.mapNotNull { id -> runCatching { repo.api().asset(id) }.getOrNull() }
+            resultAssets = resultAssets + fetched.associateBy { it.id }
+            resultUrls = resultUrls + kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                fetched.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            }
+        } catch (_: Exception) {}
     }
 
     val styles = listOf(
@@ -587,8 +763,8 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             try {
                 val up = repo.uploadImage(uri)
                 val id = up.asset_id.ifBlank { null } ?: up.asset_upload_id
-                if (refIds.size >= 2 && !refIds.contains(id)) {
-                    state = "Max 2 riferimenti: deselezionane uno prima."
+                if (refIds.size >= maxRefs && !refIds.contains(id)) {
+                    state = "Max $maxRefs riferimenti: deselezionane uno prima."
                 } else {
                     refIds = refIds + id
                     state = "Foto caricata: verrà usata come riferimento."
@@ -676,62 +852,47 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
         }
         item {
             Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, CardBorder)) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Immagini di riferimento (opzionale)", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("${refIds.size}/2", color = Muted, fontSize = 13.sp)
+                        Text("Immagini di riferimento", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${refIds.size}/$maxRefs", color = if (refIds.isEmpty()) Muted else AccentV, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         if (refIds.isNotEmpty()) {
                             TextButton(onClick = { refIds = emptySet() }, contentPadding = PaddingValues(horizontal = 4.dp)) {
-                                Text("Rimuovi", color = Warn, fontSize = 13.sp)
+                                Text("Svuota", color = Warn, fontSize = 13.sp)
                             }
                         }
                     }
                     Text(
-                        if (refIds.isEmpty()) "Con riferimenti, il job diventa ritocco (preset edit Qwen, max 2)."
-                        else "Ritocco attivo (${refIds.size}): descrivi la modifica nel prompt.",
+                        if (refIds.isEmpty()) "Scegli da telefono o dalla libreria del server. Fino a 10: il risultato segue tutti i riferimenti."
+                        else "Ritocco con ${refIds.size} riferimenti: descrivi nel prompt cosa cambiare.",
                         color = Muted, fontSize = 13.sp
                     )
-                    Spacer(Modifier.height(6.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        item {
-                            Surface(
-                                shape = RoundedCornerShape(12.dp), color = Color.Transparent,
-                                border = BorderStroke(1.dp, AccentV.copy(alpha = 0.6f)),
-                                onClick = { picker.launch("image/*") }
-                            ) {
-                                Column(
-                                    Modifier.size(104.dp, 118.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center
-                                ) {
-                                    Icon(Icons.Filled.AddPhotoAlternate, null, tint = AccentV, modifier = Modifier.size(26.dp))
-                                    Text("Carica foto", color = AccentV, fontSize = 12.sp)
-                                }
-                            }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        RefSourceButton("Da telefono", Icons.Filled.AddPhotoAlternate, Modifier.weight(1f)) {
+                            picker.launch("image/*")
                         }
-                        items(recent, key = { it.id }) { a ->
-                            val req = rememberImgReq(recentUrls[a.id], loader)
-                            val sel = refIds.contains(a.id)
-                            Surface(
-                                shape = RoundedCornerShape(12.dp), color = Card,
-                                border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
-                                onClick = {
-                                    refIds = if (sel) refIds - a.id
-                                    else if (refIds.size >= 2) refIds
-                                    else refIds + a.id
-                                }
-                            ) {
-                                Box(Modifier.size(104.dp, 118.dp)) {
+                        RefSourceButton("Dal server", Icons.Filled.PhotoLibrary, Modifier.weight(1f)) {
+                            serverOpen = true
+                        }
+                    }
+                    if (refIds.isNotEmpty()) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(refIds.toList(), key = { it }) { id ->
+                                val url = serverUrls[id] ?: recentUrls[id]
+                                Box(Modifier.size(84.dp, 96.dp).clip(RoundedCornerShape(12.dp)).background(Bg)) {
+                                    val req = rememberImgReq(url, loader)
                                     if (req != null && loader != null) {
                                         AsyncImage(
-                                            model = req, imageLoader = loader!!, contentDescription = a.id,
+                                            model = req, imageLoader = loader!!, contentDescription = id,
                                             modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                                         )
                                     }
-                                    if (sel) {
-                                        Surface(shape = CircleShape, color = AccentV, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)) {
-                                            Icon(Icons.Filled.Check, null, tint = Color.White, modifier = Modifier.size(14.dp))
-                                        }
+                                    Surface(
+                                        shape = CircleShape, color = Color.Black.copy(alpha = 0.6f),
+                                        modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
+                                        onClick = { refIds = refIds - id }
+                                    ) {
+                                        Icon(Icons.Filled.Close, null, tint = Color.White, modifier = Modifier.padding(3.dp).size(13.dp))
                                     }
                                 }
                             }
@@ -768,10 +929,13 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         val api = repo.api()
+                        val created = mutableListOf<Job>()
                         repeat(count) {
-                            api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, null, preset, refs, "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
+                            created += api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, null, preset, refs, "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
                         }
-                        state = (if (isEdit) "Ritocco" else "Generazione") + " in coda (${sel.second}×${sel.third}, $steps passi): segui lo stato in Home."
+                        tracked = created.map { it.id }
+                        liveJobs = created
+                        state = (if (isEdit) "Ritocco" else "Generazione") + " avviata (${sel.second}×${sel.third}, $steps passi): segui qui sotto."
                         refreshRecent()
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
@@ -780,6 +944,43 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
             Spacer(Modifier.height(4.dp))
             Text(state, color = Muted, fontSize = 13.sp)
             Text("La generazione continua sul server anche ad app chiusa.", color = Muted, fontSize = 12.sp)
+        }
+        item {
+            LiveJobsCard(
+                jobs = liveJobs,
+                assets = resultAssets,
+                urlFor = { id -> resultUrls[id] },
+                loader = loader,
+                onOpenAsset = onOpenAsset,
+                onCancel = { id ->
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) { runCatching { repo.api().cancel(id) } }
+                }
+            )
+        }
+        val doneOutputs = liveJobs.filter { it.status == "completed" }.flatMap { it.outputs }
+        if (doneOutputs.isNotEmpty()) item {
+            SectionHeader(Icons.Filled.CheckCircle, "Risultato pronto")
+            Spacer(Modifier.height(10.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(doneOutputs, key = { it }) { aid ->
+                    val url = resultUrls[aid]
+                    val req = rememberImgReq(url, loader)
+                    Box(
+                        Modifier.size(190.dp, 190.dp).clip(RoundedCornerShape(16.dp)).background(Bg)
+                            .clickable { onOpenAsset("asset/$aid") }
+                    ) {
+                        if (req != null && loader != null) {
+                            AsyncImage(
+                                model = req, imageLoader = loader!!, contentDescription = aid,
+                                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                            )
+                        }
+                        Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.55f), modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)) {
+                            Icon(Icons.Filled.OpenInFull, null, tint = Color.White, modifier = Modifier.padding(7.dp).size(18.dp))
+                        }
+                    }
+                }
+            }
         }
         item {
             SectionHeader(Icons.Filled.History, "Generazioni recenti")
@@ -797,6 +998,85 @@ fun CreateImageScreen(repo: StudioRepo, initialPrompt: String? = null, onDone: (
                     }
                 }
             }
+        }
+    }
+
+    // Sorgente "server": stessa libreria della sezione immagini di Hermes Hub.
+    if (serverOpen) {
+        ModalBottomSheet(onDismissRequest = { serverOpen = false }, containerColor = Bg) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.PhotoLibrary, null, tint = AccentV, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Libreria del server", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                    Text("${refIds.size}/$maxRefs", color = Muted, fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text("Tocca le immagini da usare come riferimento.", color = Muted, fontSize = 13.sp)
+                Spacer(Modifier.height(10.dp))
+                if (serverImages.isEmpty()) {
+                    Text("Nessuna immagine sul server.", color = Muted, fontSize = 13.sp)
+                    Spacer(Modifier.height(16.dp))
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth().height(420.dp)
+                    ) {
+                        items(serverImages, key = { it.id }) { a ->
+                            val sel = refIds.contains(a.id)
+                            val req = rememberImgReq(serverUrls[a.id], loader)
+                            Surface(
+                                shape = RoundedCornerShape(12.dp), color = Card,
+                                border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
+                                onClick = {
+                                    refIds = if (sel) refIds - a.id
+                                    else if (refIds.size >= maxRefs) refIds
+                                    else refIds + a.id
+                                }
+                            ) {
+                                Box(Modifier.height(112.dp)) {
+                                    if (req != null && loader != null) {
+                                        AsyncImage(
+                                            model = req, imageLoader = loader!!, contentDescription = a.id,
+                                            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                    if (sel) {
+                                        Surface(shape = CircleShape, color = AccentV, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)) {
+                                            Icon(Icons.Filled.Check, null, tint = Color.White, modifier = Modifier.size(13.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                GradientButton("Fatto (${refIds.size})", Icons.Filled.Check, onClick = { serverOpen = false })
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RefSourceButton(label: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(14.dp), color = Color.Transparent,
+        border = BorderStroke(1.dp, AccentV.copy(alpha = 0.55f)),
+        modifier = modifier, onClick = onClick
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(icon, null, tint = AccentV, modifier = Modifier.size(19.dp))
+            Spacer(Modifier.width(7.dp))
+            Text(label, color = AccentV, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
         }
     }
 }
@@ -855,6 +1135,32 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
     var state by remember { mutableStateOf("Pronto") }
     var capsVideo by remember { mutableStateOf<com.hermes.studio.CapTask?>(null) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
+    // Job lanciato da qui: seguito in schermata, risultato visibile subito.
+    var tracked by remember { mutableStateOf<List<String>>(emptyList()) }
+    var liveJobs by remember { mutableStateOf<List<Job>>(emptyList()) }
+    var resultAssets by remember { mutableStateOf<Map<String, Asset>>(emptyMap()) }
+    var resultUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
+    LaunchedEffect(tracked) {
+        if (tracked.isEmpty()) return@LaunchedEffect
+        while (true) {
+            val js = tracked.mapNotNull { id -> runCatching { repo.api().job(id) }.getOrNull() }
+            if (js.isNotEmpty()) liveJobs = js
+            if (js.size == tracked.size && js.all { it.status in setOf("completed", "failed", "cancelled") }) break
+            kotlinx.coroutines.delay(2000)
+        }
+    }
+    LaunchedEffect(liveJobs) {
+        val outIds = liveJobs.filter { it.status == "completed" }.flatMap { it.outputs }.distinct()
+        val missing = outIds.filter { !resultAssets.containsKey(it) }
+        if (missing.isEmpty()) return@LaunchedEffect
+        try {
+            val fetched = missing.mapNotNull { id -> runCatching { repo.api().asset(id) }.getOrNull() }
+            resultAssets = resultAssets + fetched.associateBy { it.id }
+            resultUrls = resultUrls + kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                fetched.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            }
+        } catch (_: Exception) {}
+    }
     val maxPrompt = 1000
 
     val camHints = listOf(
@@ -1062,10 +1368,12 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
                 state = "Accodamento…"
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
-                        repo.api().createJob(
+                        val created = repo.api().createJob(
                             JobCreate("video", prompt, null, "minimax-h3-turbo-4step", null, dims.first, dims.second, 4, null, durSecs, null, sids, "app-v-${System.currentTimeMillis()}-${prompt.hashCode()}")
                         )
-                        state = "Inserito in coda (~${durSecs.toInt()} s, ${sids.size} start): segui lo stato in Home."
+                        tracked = listOf(created.id)
+                        liveJobs = listOf(created)
+                        state = "Rendering avviato (${durSecs.toInt()} s, ${sids.size} start): segui qui sotto."
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
                 }
@@ -1073,6 +1381,18 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             Spacer(Modifier.height(4.dp))
             Text(state, color = Muted, fontSize = 13.sp)
             Text("Il rendering gira sul server anche ad app chiusa.", color = Muted, fontSize = 12.sp)
+        }
+        item {
+            LiveJobsCard(
+                jobs = liveJobs,
+                assets = resultAssets,
+                urlFor = { id -> resultUrls[id] },
+                loader = loader,
+                onOpenAsset = onOpenAsset,
+                onCancel = { id ->
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) { runCatching { repo.api().cancel(id) } }
+                }
+            )
         }
         item {
             SectionHeader(Icons.Filled.History, "Video recenti", "Vedi tutto", onAction = { onOpenAsset("library") })
