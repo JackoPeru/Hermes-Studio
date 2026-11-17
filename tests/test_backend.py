@@ -616,3 +616,26 @@ def test_video_480p_dims_honored(client):
     j = r.json()
     assert (j["width"], j["height"]) == (832, 480)
 
+
+def test_library_browse_import_and_jail(client, tmp_path, monkeypatch):
+    import app.main as m
+    from PIL import Image
+    lib = tmp_path / "hub_uploads"
+    (lib / "denudate" / "claudia").mkdir(parents=True)
+    img = lib / "denudate" / "claudia" / "a.png"
+    Image.new("RGB", (24, 24), (200, 30, 30)).save(img)
+    monkeypatch.setattr(m, "LIBRARY_ROOT", lib.resolve())
+
+    assert client.get("/api/v1/library?path=..").status_code == 400
+    root = client.get("/api/v1/library").json()
+    assert [d["name"] for d in root["dirs"]] == ["denudate"]
+    sub = client.get("/api/v1/library?path=denudate/claudia").json()
+    assert len(sub["files"]) == 1
+    assert sub["files"][0]["path"] == "denudate/claudia/a.png"
+    assert client.get("/api/v1/library/file?path=denudate/claudia/a.png").status_code == 200
+    imp = client.post("/api/v1/library/import", json={"path": "denudate/claudia/a.png"})
+    assert imp.status_code == 200, imp.text
+    aid = imp.json()["id"]
+    again = client.post("/api/v1/library/import", json={"path": "denudate/claudia/a.png"})
+    assert again.json()["id"] == aid  # dedupe per contenuto
+    assert client.get("/api/v1/library/file?path=../../etc/passwd").status_code == 400

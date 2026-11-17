@@ -81,6 +81,8 @@ interface StudioApi {
     @POST("api/v1/maintenance/prune") suspend fun prune(@Body b: PruneBody): PruneOut
     @GET("api/v1/projects") suspend fun projects(): List<Project>
     @POST("api/v1/projects") suspend fun createProject(@Body b: ProjectCreate): Project
+    @GET("api/v1/library") suspend fun library(@Query("path") path: String = ""): LibraryOut
+    @POST("api/v1/library/import") suspend fun importLibrary(@Body b: LibraryImport): Asset
 }
 
 class StudioRepo(private val ctx: Context) {

@@ -25,3 +25,8 @@ MANAGER_URL = os.environ.get("HERMES_STUDIO_MANAGER_URL", "http://127.0.0.1:8643
 MANAGER_KEY = os.environ.get("HERMES_STUDIO_MANAGER_KEY", "")
 
 MAX_UPLOAD_MB = int(os.environ.get("HERMES_STUDIO_MAX_UPLOAD_MB", "25"))
+
+# Cartella immagini condivisa con Hermes Hub: stessa root della sua libreria
+# (default ~/.hermes/hub_uploads, con eventuali sottocartelle).
+LIBRARY_ROOT = Path(os.environ.get(
+    "HERMES_STUDIO_LIBRARY_ROOT", str(Path.home() / ".hermes" / "hub_uploads"))).resolve()

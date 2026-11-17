@@ -48,7 +48,8 @@ Apri `android/` in Android Studio (se manca il wrapper: `gradle wrapper`), impos
 ## Limiti onesti (V3)
 - Video = solo image-to-video H3 turbo (durate 3/5/8s): 16:9/9:16 in 720p o 480p, start frame obbligatorio dalla libreria (16:9 uno, 9:16 fino a due). Text-to-video: nessun preset nel manager (solo template grezzo mai validato) → non offerto.
 - Immagini: tier 2K / Full HD / HD / 480p per formato (max reale 2560×1440), passi fissi 20 (la qualità si sceglie con la risoluzione).
-- Edit/reference Qwen: verificato con render reali (fino a 10 riferimenti; 10 richiedono ~14 min e più VRAM, 3 ~4 min).
+- Edit/reference Qwen: verificato con render reali (fino a 10 riferimenti; 10 richiedono ~14 min e più VRAM, 3 ~4 min). Riferimenti da telefono o dalla libreria Hub (`~/.hermes/hub_uploads`, navigazione cartelle, import dedupe).
+- Start frame video: stessa doppia sorgente (telefono o libreria Hub) del picker immagini.
 - Niente ETA inventate: stato + step; progresso reale solo quando il manager lo riporta.
 - Concorrenza 1 job (VRAM reale); coordinamento via GPU-manager, mai kill/reset.
 - Auto-update in-app firmato dal feed `updates/latest.json` (`docs/UPDATE.md`).

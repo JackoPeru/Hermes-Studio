@@ -106,6 +106,27 @@ data class PruneOut(
 )
 
 @JsonClass(generateAdapter = true)
+data class LibraryEntry(
+    val name: String = "",
+    val kind: String = "",
+    val path: String = "",
+    val size_bytes: Long = 0L,
+    val modified_at: Double = 0.0
+)
+
+@JsonClass(generateAdapter = true)
+data class LibraryOut(
+    val root: String = "",
+    val path: String = "",
+    val parent: String? = null,
+    val dirs: List<LibraryEntry> = emptyList(),
+    val files: List<LibraryEntry> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class LibraryImport(val path: String)
+
+@JsonClass(generateAdapter = true)
 data class Asset(
     val id: String = "",
     val kind: String = "",

@@ -77,6 +77,23 @@ class AssetOut(BaseModel):
     duration: float | None = None
     created_at: str
 
+class LibraryEntry(BaseModel):
+    name: str
+    kind: str  # dir | image
+    path: str
+    size_bytes: int = 0
+    modified_at: float = 0.0
+
+class LibraryOut(BaseModel):
+    root: str
+    path: str
+    parent: str | None = None
+    dirs: list[LibraryEntry] = Field(default_factory=list)
+    files: list[LibraryEntry] = Field(default_factory=list)
+
+class LibraryImport(BaseModel):
+    path: str = Field(min_length=1, max_length=1024)
+
 class GpuOut(BaseModel):
     index: int
     name: str

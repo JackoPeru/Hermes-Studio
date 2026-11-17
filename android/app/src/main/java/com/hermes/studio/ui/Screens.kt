@@ -668,10 +668,9 @@ fun CreateImageScreen(
     var recent by remember { mutableStateOf(repo.memAssets?.filter { it.kind != "video" }?.take(6) ?: emptyList()) }
     var recentUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
-    // Sorgenti riferimenti: telefono (upload) o libreria del server.
-    var serverOpen by remember { mutableStateOf(false) }
-    var serverImages by remember { mutableStateOf<List<Asset>>(emptyList()) }
-    var serverUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
+    // Sorgenti riferimenti: telefono (upload) o libreria del server (Hub).
+    var pickerOpen by remember { mutableStateOf(false) }
+    var refUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     // Job lanciati da qui: seguiti in schermata, senza passare dalla Home.
     var tracked by remember { mutableStateOf<List<String>>(emptyList()) }
     var liveJobs by remember { mutableStateOf<List<Job>>(emptyList()) }
@@ -688,16 +687,9 @@ fun CreateImageScreen(
             }
         }
     }
-    LaunchedEffect(serverOpen) {
-        if (!serverOpen) return@LaunchedEffect
-        try {
-            val all = repo.api().assets("image")
-            serverImages = all
-            loader = repo.imageLoader()
-            serverUrls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                all.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
-            }
-        } catch (_: Exception) {}
+    LaunchedEffect(pickerOpen) {
+        if (!pickerOpen) return@LaunchedEffect
+        loader = repo.imageLoader()
     }
     // Poll leggero dei job di questa schermata: 2s finché qualcuno è attivo.
     LaunchedEffect(tracked) {
@@ -775,6 +767,9 @@ fun CreateImageScreen(
                     state = "Max $maxRefs riferimenti: deselezionane uno prima."
                 } else {
                     refIds = refIds + id
+                    runCatching { repo.api().asset(id) }.getOrNull()?.let { a ->
+                        refUrls = refUrls + (id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)))
+                    }
                     state = "Foto caricata: verrà usata come riferimento."
                 }
                 refreshRecent()
@@ -880,13 +875,13 @@ fun CreateImageScreen(
                             picker.launch("image/*")
                         }
                         RefSourceButton("Dal server", Icons.Filled.PhotoLibrary, Modifier.weight(1f)) {
-                            serverOpen = true
+                            pickerOpen = true
                         }
                     }
                     if (refIds.isNotEmpty()) {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(refIds.toList(), key = { it }) { id ->
-                                val url = serverUrls[id] ?: recentUrls[id]
+                                val url = refUrls[id] ?: recentUrls[id]
                                 Box(Modifier.size(84.dp, 96.dp).clip(RoundedCornerShape(12.dp)).background(Bg)) {
                                     val req = rememberImgReq(url, loader)
                                     if (req != null && loader != null) {
@@ -1009,63 +1004,26 @@ fun CreateImageScreen(
         }
     }
 
-    // Sorgente "server": stessa libreria della sezione immagini di Hermes Hub.
-    if (serverOpen) {
-        ModalBottomSheet(onDismissRequest = { serverOpen = false }, containerColor = Bg) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.PhotoLibrary, null, tint = AccentV, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Libreria del server", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
-                    Text("${refIds.size}/$maxRefs", color = Muted, fontSize = 13.sp)
-                }
-                Spacer(Modifier.height(4.dp))
-                Text("Tocca le immagini da usare come riferimento.", color = Muted, fontSize = 13.sp)
-                Spacer(Modifier.height(10.dp))
-                if (serverImages.isEmpty()) {
-                    Text("Nessuna immagine sul server.", color = Muted, fontSize = 13.sp)
-                    Spacer(Modifier.height(16.dp))
+    // Sorgenti riferimenti: Studio (asset) o Server (stessa libreria di Hub,
+    // con navigazione cartelle). Un solo picker condiviso con Crea video.
+    if (pickerOpen) {
+        ReferencePickerSheet(
+            repo = repo,
+            loader = loader,
+            selectedIds = refIds,
+            maxRefs = maxRefs,
+            onToggle = { asset, url ->
+                refIds = if (refIds.contains(asset.id)) {
+                    refIds - asset.id
+                } else if (refIds.size >= maxRefs) {
+                    refIds
                 } else {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(3),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth().height(420.dp)
-                    ) {
-                        items(serverImages, key = { it.id }) { a ->
-                            val sel = refIds.contains(a.id)
-                            val req = rememberImgReq(serverUrls[a.id], loader)
-                            Surface(
-                                shape = RoundedCornerShape(12.dp), color = Card,
-                                border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
-                                onClick = {
-                                    refIds = if (sel) refIds - a.id
-                                    else if (refIds.size >= maxRefs) refIds
-                                    else refIds + a.id
-                                }
-                            ) {
-                                Box(Modifier.height(112.dp)) {
-                                    if (req != null && loader != null) {
-                                        AsyncImage(
-                                            model = req, imageLoader = loader!!, contentDescription = a.id,
-                                            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
-                                        )
-                                    }
-                                    if (sel) {
-                                        Surface(shape = CircleShape, color = AccentV, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)) {
-                                            Icon(Icons.Filled.Check, null, tint = Color.White, modifier = Modifier.size(13.dp))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    if (url != null) refUrls = refUrls + (asset.id to url)
+                    refIds + asset.id
                 }
-                Spacer(Modifier.height(12.dp))
-                GradientButton("Fatto (${refIds.size})", Icons.Filled.Check, onClick = { serverOpen = false })
-                Spacer(Modifier.height(24.dp))
-            }
-        }
+            },
+            onDismiss = { pickerOpen = false }
+        )
     }
 }
 
@@ -1085,6 +1043,235 @@ fun RefSourceButton(label: String, icon: ImageVector, modifier: Modifier = Modif
             Icon(icon, null, tint = AccentV, modifier = Modifier.size(19.dp))
             Spacer(Modifier.width(7.dp))
             Text(label, color = AccentV, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+    }
+}
+
+/**
+ * Picker condiviso (Crea immagine e Crea video).
+ * - "Studio": gli asset già in libreria.
+ * - "Server": la stessa cartella di Hermes Hub (~/.hermes/hub_uploads) con
+ *   navigazione a cartelle; l'immagine scelta viene importata come asset
+ *   (dedupe per contenuto), così i job la trovano staged.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ReferencePickerSheet(
+    repo: StudioRepo,
+    loader: coil.ImageLoader?,
+    selectedIds: Set<String>,
+    maxRefs: Int,
+    onToggle: (Asset, String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var tab by remember { mutableStateOf(0) }
+    var studio by remember { mutableStateOf<List<Asset>>(emptyList()) }
+    var studioUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
+    var base by remember { mutableStateOf("") }
+    var path by remember { mutableStateOf("") }
+    var browse by remember { mutableStateOf<LibraryOut?>(null) }
+    var err by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf<String?>(null) }
+    var imported by remember { mutableStateOf<Map<String, Asset>>(emptyMap()) }
+
+    LaunchedEffect(Unit) {
+        base = repo.baseUrl()
+        try {
+            val all = repo.api().assets("image")
+            studio = all
+            studioUrls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                all.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
+            }
+        } catch (_: Exception) {}
+    }
+    suspend fun load(p: String) {
+        err = null
+        try { browse = repo.api().library(p) } catch (e: Exception) { err = "Server: ${e.message}" }
+    }
+    LaunchedEffect(tab) { if (tab == 1) load(path) }
+    val crumbs = remember(path) {
+        val segs = path.split("/").filter { it.isNotBlank() }
+        segs.mapIndexed { i, s -> s to segs.take(i + 1).joinToString("/") }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Bg) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.PhotoLibrary, null, tint = AccentV, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Immagini di riferimento", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                Text(
+                    "${selectedIds.size}/$maxRefs",
+                    color = if (selectedIds.isEmpty()) Muted else AccentV,
+                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                SegmentedButton(
+                    selected = tab == 0, onClick = { tab = 0 },
+                    shape = SegmentedButtonDefaults.itemShape(0, 2)
+                ) { Text("Studio") }
+                SegmentedButton(
+                    selected = tab == 1, onClick = { tab = 1 },
+                    shape = SegmentedButtonDefaults.itemShape(1, 2)
+                ) { Text("Server") }
+            }
+            Spacer(Modifier.height(10.dp))
+
+            if (tab == 0) {
+                if (studio.isEmpty()) {
+                    Text("Nessuna immagine nello Studio.", color = Muted, fontSize = 13.sp)
+                    Spacer(Modifier.height(12.dp))
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth().height(380.dp)
+                    ) {
+                        items(studio, key = { it.id }) { a ->
+                            val sel = selectedIds.contains(a.id)
+                            val req = rememberImgReq(studioUrls[a.id], loader)
+                            Surface(
+                                shape = RoundedCornerShape(12.dp), color = Card,
+                                border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
+                                onClick = { onToggle(a, studioUrls[a.id]) }
+                            ) {
+                                Box(Modifier.height(112.dp)) {
+                                    if (req != null && loader != null) {
+                                        AsyncImage(
+                                            model = req, imageLoader = loader, contentDescription = a.id,
+                                            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                    if (sel) {
+                                        Surface(shape = CircleShape, color = AccentV, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)) {
+                                            Icon(Icons.Filled.Check, null, tint = Color.White, modifier = Modifier.size(13.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Navigazione come Hub: breadcrumb + cartelle + immagini.
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    if (path.isNotEmpty()) {
+                        IconButton(
+                            onClick = { val p = browse?.parent ?: ""; path = p; scope.launch { load(p) } },
+                            modifier = Modifier.size(30.dp)
+                        ) {
+                            Icon(Icons.Filled.ArrowBack, "Cartella superiore", tint = Muted, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    TextButton(
+                        onClick = { path = ""; scope.launch { load("") } },
+                        contentPadding = PaddingValues(horizontal = 4.dp)
+                    ) {
+                        Text(
+                            "Hub", color = if (path.isEmpty()) Color.White else AccentV,
+                            fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    crumbs.forEach { (name, target) ->
+                        Text("/", color = Muted, fontSize = 13.sp)
+                        TextButton(
+                            onClick = { path = target; scope.launch { load(target) } },
+                            contentPadding = PaddingValues(horizontal = 4.dp)
+                        ) {
+                            Text(
+                                name, color = if (target == path) Color.White else AccentV,
+                                fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                val dirs = browse?.dirs ?: emptyList()
+                if (dirs.isNotEmpty()) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(dirs, key = { it.path }) { d ->
+                            Surface(
+                                shape = RoundedCornerShape(12.dp), color = Card,
+                                border = BorderStroke(1.dp, CardBorder),
+                                onClick = { path = d.path; scope.launch { load(d.path) } }
+                            ) {
+                                Row(
+                                    Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Filled.Folder, null, tint = AccentB, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(d.name, fontSize = 13.sp, maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+                val files = browse?.files ?: emptyList()
+                when {
+                    err != null -> Text(err!!, color = Warn, fontSize = 12.sp)
+                    files.isEmpty() -> Text("Nessuna immagine in questa cartella.", color = Muted, fontSize = 13.sp)
+                    else -> LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth().height(360.dp)
+                    ) {
+                        items(files, key = { it.path }) { f ->
+                            val known = imported[f.path]
+                            val sel = known != null && selectedIds.contains(known.id)
+                            val url = if (base.isBlank()) null
+                            else base.trimEnd('/') + "/api/v1/library/file?path=" + Uri.encode(f.path)
+                            val req = rememberImgReq(url, loader)
+                            Surface(
+                                shape = RoundedCornerShape(12.dp), color = Card,
+                                border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
+                                onClick = {
+                                    if (busy == null) scope.launch {
+                                        busy = f.path
+                                        try {
+                                            val a = imported[f.path] ?: repo.api()
+                                                .importLibrary(LibraryImport(f.path))
+                                                .also { imported = imported + (f.path to it) }
+                                            onToggle(a, repo.assetUrl(a, true) ?: repo.assetUrl(a, false))
+                                        } catch (e: Exception) {
+                                            err = "Import fallito: ${e.message}"
+                                        } finally {
+                                            busy = null
+                                        }
+                                    }
+                                }
+                            ) {
+                                Box(Modifier.height(112.dp)) {
+                                    if (req != null && loader != null) {
+                                        AsyncImage(
+                                            model = req, imageLoader = loader, contentDescription = f.name,
+                                            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                    if (sel) {
+                                        Surface(shape = CircleShape, color = AccentV, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)) {
+                                            Icon(Icons.Filled.Check, null, tint = Color.White, modifier = Modifier.size(13.dp))
+                                        }
+                                    }
+                                    if (busy == f.path) {
+                                        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)), contentAlignment = Alignment.Center) {
+                                            CircularProgressIndicator(modifier = Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            GradientButton("Fatto (${selectedIds.size})", Icons.Filled.Check, onClick = onDismiss)
+            Spacer(Modifier.height(24.dp))
         }
     }
 }
@@ -1121,11 +1308,12 @@ fun DropDownField(label: String, value: String, options: List<String>, onSelect:
 @Composable
 fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (() -> Unit)? = null, showHeader: Boolean = true) {
     val scope = rememberCoroutineScope()
-    var images by remember { mutableStateOf(repo.memAssets?.filter { it.kind != "video" }?.take(12) ?: emptyList()) }
-    var imgUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var recentVideos by remember { mutableStateOf(repo.memAssets?.filter { it.kind == "video" }?.take(6) ?: emptyList()) }
     var videoUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    // Sorgenti start frame: telefono o libreria Hub (stesso picker delle immagini).
+    var pickerOpen by remember { mutableStateOf(false) }
+    var refUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     var prompt by remember { mutableStateOf("") }
     // Solo 720p/480p: le uniche risoluzioni offerte per H3 (il manager allinea ai multipli di 32).
     val videoFormats = mapOf(
@@ -1178,16 +1366,9 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         "Cinematico" to "stile cinematografico"
     )
 
-    // URL derivate (anche da cache): start frame subito visibili.
-    LaunchedEffect(images, recentVideos, loader) {
+    // URL derivate (anche da cache): video recenti subito visibili.
+    LaunchedEffect(recentVideos, loader) {
         loader ?: return@LaunchedEffect
-        val ii = images.map { it.id }.toSet()
-        if (ii.isEmpty()) { if (imgUrls.isNotEmpty()) imgUrls = emptyMap() }
-        else if (imgUrls.keys != ii) {
-            imgUrls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                images.associate { a -> a.id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)) }
-            }
-        }
         val vi = recentVideos.map { it.id }.toSet()
         if (vi.isEmpty()) { if (videoUrls.isNotEmpty()) videoUrls = emptyMap() }
         else if (videoUrls.keys != vi) {
@@ -1199,18 +1380,13 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
 
     suspend fun refresh() {
         try {
-            // Caps + immagini + video in parallelo (prima erano 3 round-trip in fila).
+            // Caps + video recenti in parallelo.
             val api = repo.api()
             val capsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.capabilities() }
-            val imgsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.assets("image").take(12) }
             val vidsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.assets("video").take(6) }
             capsVideo = capsD.await().video.firstOrNull { it.task == "image-to-video" }
-            val imgs = imgsD.await()
-            images = imgs
             loader = repo.imageLoader()
-            val vids = vidsD.await()
-            recentVideos = vids
-            selectedIds = selectedIds.filter { id -> imgs.any { it.id == id } }.take(maxRefs()).toSet()
+            recentVideos = vidsD.await()
         } catch (_: Exception) {}
     }
     LaunchedEffect(Unit) { refresh() }
@@ -1225,9 +1401,11 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
                     state = "Max ${maxRefs()} start frame: deselezionane uno prima."
                 } else {
                     selectedIds = selectedIds + id
+                    runCatching { repo.api().asset(id) }.getOrNull()?.let { a ->
+                        refUrls = refUrls + (id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)))
+                    }
                     state = "Foto caricata e selezionata."
                 }
-                refresh()
             } catch (e: Exception) { state = "Upload fallito: ${e.message}" }
         }
     }
@@ -1251,53 +1429,41 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SectionHeader(Icons.Filled.Image, "Immagine di partenza")
                 Spacer(Modifier.weight(1f))
-                Text("${selectedIds.size}/${maxRefs()}", color = Muted, fontSize = 13.sp)
+                Text("${selectedIds.size}/${maxRefs()}", color = if (selectedIds.isEmpty()) Muted else AccentV, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             }
             Spacer(Modifier.height(10.dp))
-            if (images.isEmpty()) {
-                Text("Nessuna immagine in libreria: genera o carica prima un'immagine.", color = Muted, fontSize = 13.sp)
-            } else {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    item {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp), color = Color.Transparent,
-                            border = BorderStroke(1.dp, AccentB.copy(alpha = 0.6f)),
-                            onClick = { videoPicker.launch("image/*") }
-                        ) {
-                            Column(
-                                Modifier.size(130.dp, 150.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
+            Text(
+                if (selectedIds.isEmpty()) "Scegli dal telefono o dalla libreria Hub. 16:9 usa un frame, 9:16 fino a due."
+                else "Start frame selezionati: ${selectedIds.size}.",
+                color = Muted, fontSize = 13.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                RefSourceButton("Da telefono", Icons.Filled.AddPhotoAlternate, Modifier.weight(1f)) {
+                    videoPicker.launch("image/*")
+                }
+                RefSourceButton("Dal server", Icons.Filled.PhotoLibrary, Modifier.weight(1f)) {
+                    pickerOpen = true
+                }
+            }
+            if (selectedIds.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(selectedIds.toList(), key = { it }) { id ->
+                        val req = rememberImgReq(refUrls[id], loader)
+                        Box(Modifier.size(104.dp, 118.dp).clip(RoundedCornerShape(12.dp)).background(Bg)) {
+                            if (req != null && loader != null) {
+                                AsyncImage(
+                                    model = req, imageLoader = loader!!, contentDescription = id,
+                                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                                )
+                            }
+                            Surface(
+                                shape = CircleShape, color = Color.Black.copy(alpha = 0.6f),
+                                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
+                                onClick = { selectedIds = selectedIds - id }
                             ) {
-                                Icon(Icons.Filled.AddPhotoAlternate, null, tint = AccentB, modifier = Modifier.size(26.dp))
-                                Text("Carica foto", color = AccentB, fontSize = 12.sp)
-                            }
-                        }
-                    }
-                    items(images, key = { it.id }) { a ->
-                        val req = rememberImgReq(imgUrls[a.id], loader)
-                        val sel = selectedIds.contains(a.id)
-                        Surface(
-                            shape = RoundedCornerShape(14.dp), color = Card,
-                            border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
-                            onClick = {
-                                selectedIds = if (sel) selectedIds - a.id
-                                else if (selectedIds.size >= maxRefs()) selectedIds
-                                else selectedIds + a.id
-                            }
-                        ) {
-                            Box(Modifier.size(130.dp, 150.dp)) {
-                                if (req != null && loader != null) {
-                                    AsyncImage(
-                                        model = req, imageLoader = loader!!, contentDescription = a.id,
-                                        modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
-                                    )
-                                }
-                                if (sel) {
-                                    Surface(shape = CircleShape, color = AccentV, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
-                                        Icon(Icons.Filled.Check, null, tint = Color.White, modifier = Modifier.size(14.dp))
-                                    }
-                                }
+                                Icon(Icons.Filled.Close, null, tint = Color.White, modifier = Modifier.padding(3.dp).size(13.dp))
                             }
                         }
                     }
@@ -1433,6 +1599,26 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
                 }
             }
         }
+    }
+
+    if (pickerOpen) {
+        ReferencePickerSheet(
+            repo = repo,
+            loader = loader,
+            selectedIds = selectedIds,
+            maxRefs = maxRefs(),
+            onToggle = { asset, url ->
+                selectedIds = if (selectedIds.contains(asset.id)) {
+                    selectedIds - asset.id
+                } else if (selectedIds.size >= maxRefs()) {
+                    selectedIds
+                } else {
+                    if (url != null) refUrls = refUrls + (asset.id to url)
+                    selectedIds + asset.id
+                }
+            },
+            onDismiss = { pickerOpen = false }
+        )
     }
 }
 

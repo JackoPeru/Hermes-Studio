@@ -1,8 +1,10 @@
 """Hermes Studio API v1 — engine-independent contract for the Android app."""
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import logging
+import mimetypes
 import random
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,13 +17,13 @@ from . import db
 from .auth import get_or_create_token, require_auth
 from .comfy import ComfyUIAdapter
 from .config import (
-    API_VERSION, ASSETS_DIR, BACKEND_VERSION, COMFY_URL, DATA_DIR, MANAGER_KEY,
-    MANAGER_URL, MAX_UPLOAD_MB, THUMBS_DIR, UPLOADS_DIR,
+    API_VERSION, ASSETS_DIR, BACKEND_VERSION, COMFY_URL, DATA_DIR, LIBRARY_ROOT,
+    MANAGER_KEY, MANAGER_URL, MAX_UPLOAD_MB, THUMBS_DIR, UPLOADS_DIR,
 )
 from .manager import ManagerClient
 from .models import (
     AssetOut, CapabilitiesOut, CapabilityTask, GpuOut, HealthOut, JobCreate, JobOut,
-    ProjectIn, ProjectOut, PruneIn, PruneOut,
+    LibraryEntry, LibraryImport, LibraryOut, ProjectIn, ProjectOut, PruneIn, PruneOut,
 )
 from .storage import make_thumb, probe_video, safe_name, video_thumb
 from .workflows import DEFAULT_NEGATIVE, apply_style
@@ -1129,6 +1131,120 @@ async def thumb_asset(aid: str, _: None = Depends(require_auth)):
             raise HTTPException(404, "no thumbnail")
         t = t2
     return FileResponse(str(t), media_type="image/jpeg")
+
+
+# ---------- Libreria immagini condivisa con Hermes Hub ----------
+# Stessa cartella (/v1/image/library di Hub): ~/.hermes/hub_uploads, con
+# sottocartelle. Jail rigido: nessun path assoluto, nessun .., nessun symlink.
+
+_LIB_IMG_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def _library_clean(rel: str) -> str:
+    parts = []
+    for seg in (rel or "").replace("\\", "/").split("/"):
+        if seg in ("", ".", "~"):
+            continue
+        if seg == ".." or seg.startswith("."):
+            raise HTTPException(400, "percorso non valido")
+        parts.append(seg)
+    return "/".join(parts)
+
+
+def _library_path(rel: str) -> Path:
+    cand = (LIBRARY_ROOT / _library_clean(rel)).resolve()
+    if cand != LIBRARY_ROOT and not str(cand).startswith(str(LIBRARY_ROOT) + "/"):
+        raise HTTPException(403, "fuori dalla libreria")
+    return cand
+
+
+@app.get("/api/v1/library", response_model=LibraryOut)
+async def library_browse(path: str = "", _: None = Depends(require_auth)):
+    rel = _library_clean(path)
+    d = _library_path(rel)
+    if not d.is_dir():
+        raise HTTPException(404, "cartella non trovata")
+    dirs: list[LibraryEntry] = []
+    files: list[LibraryEntry] = []
+    try:
+        for e in d.iterdir():
+            if e.name.startswith(".") or e.name == "__pycache__" or e.is_symlink():
+                continue
+            child = f"{rel}/{e.name}" if rel else e.name
+            try:
+                if e.is_dir():
+                    dirs.append(LibraryEntry(name=e.name, kind="dir", path=child))
+                elif e.is_file() and e.suffix.lower() in _LIB_IMG_EXT:
+                    st = e.stat()
+                    files.append(LibraryEntry(
+                        name=e.name, kind="image", path=child,
+                        size_bytes=st.st_size, modified_at=st.st_mtime))
+            except OSError:
+                continue
+    except OSError as e:
+        raise HTTPException(500, f"lettura libreria fallita: {e}")
+    dirs.sort(key=lambda x: x.name.lower())
+    files.sort(key=lambda x: x.modified_at, reverse=True)
+    parent = None if not rel else "/".join(rel.split("/")[:-1])
+    return LibraryOut(root=str(LIBRARY_ROOT), path=rel, parent=parent,
+                      dirs=dirs[:100], files=files[:200])
+
+
+@app.get("/api/v1/library/file")
+async def library_file(path: str = Query(...), _: None = Depends(require_auth)):
+    f = _library_path(path)
+    if not f.is_file() or f.is_symlink() or f.suffix.lower() not in _LIB_IMG_EXT:
+        raise HTTPException(404, "immagine non trovata")
+    media = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+    return FileResponse(str(f), media_type=media)
+
+
+@app.post("/api/v1/library/import", response_model=AssetOut)
+async def library_import(body: LibraryImport, _: None = Depends(require_auth)):
+    src = _library_path(body.path)
+    if not src.is_file() or src.is_symlink() or src.suffix.lower() not in _LIB_IMG_EXT:
+        raise HTTPException(404, "immagine non trovata")
+    if src.stat().st_size > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, f"file oltre {MAX_UPLOAD_MB} MB")
+
+    def _digest() -> str:
+        h = hashlib.sha256()
+        with open(src, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    digest = await asyncio.to_thread(_digest)
+    rel = f"lib_{digest[:20]}{src.suffix.lower()}"
+    cx = db.connect()
+    try:
+        ex = cx.execute("SELECT * FROM assets WHERE rel_path=?", (rel,)).fetchone()
+        if ex:
+            return _asset_row_to_out(ex)
+        dest = (ASSETS_DIR / safe_name(rel)).resolve()
+        if not str(dest).startswith(str(ASSETS_DIR.resolve()) + "/"):
+            raise HTTPException(400, "percorso non valido")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        import shutil as _sh
+        await asyncio.to_thread(_sh.copy2, src, dest)
+        aid = db.new_id("ast")
+        w = h = None
+        try:
+            from PIL import Image as _I
+            with _I.open(dest) as im:
+                w, h = im.size
+        except Exception:
+            pass
+        cx.execute(
+            "INSERT INTO assets(id,kind,rel_path,job_id,width,height,created_at) VALUES(?,?,?,?,?,?,?)",
+            (aid, "image", rel, None, w, h, db.now()),
+        )
+        cx.commit()
+        row = cx.execute("SELECT * FROM assets WHERE id=?", (aid,)).fetchone()
+    finally:
+        cx.close()
+    await asyncio.to_thread(make_thumb, dest, aid)
+    return _asset_row_to_out(row)
 
 
 @app.post("/api/v1/assets/{aid}/favorite")
