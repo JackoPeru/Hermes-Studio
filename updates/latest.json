@@ -1,11 +1,11 @@
-{
+﻿{
   "versionCode": 32,
   "versionName": "0.1.1-gh32",
   "tagName": "studio-32",
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-32/HermesStudio-32.apk",
   "assetSize": 22552192,
   "sha256": "d8cc52ea604770b92495742b744f36541b6023c411faaeaeea51c73cf43c70f1",
-  "signature": "",
+  "signature": "MEUCIEXmT4ROCsqLF9AkUlkGlGM3cq6TkBe/Jn4HlA8ERLTpAiEAg+xD2R//QoyMjEcJbAjUb1OLqUFltWUP22bSStJMHdE=",
   "publishedAt": "2026-11-17T23:14:11Z",
-  "notes": ["Fix: test UTF-8 (byte ANSI da Add-Content)", "Video: 5 modalità workflow verificate (i2v/first-last/ref2va/t2v/v2v); stili immagine 14, facoltativi", "Libreria Hub: browser cartelle server (jail+import dedupe), picker condiviso anche nel video", "Home: barra indeterminata durante il rendering (niente 50% finto)"]
+  "notes": ["Fix: test UTF-8 (byte ANSI da Add-Content)", "Video: 5 modalita workflow verificate (i2v/first-last/ref2va/t2v/v2v); stili immagine 14, facoltativi", "Libreria Hub: browser cartelle server (jail+import dedupe), picker condiviso anche nel video", "Home: barra indeterminata durante il rendering (niente 50% finto)"]
 }
