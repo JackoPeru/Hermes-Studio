@@ -19,7 +19,7 @@ def main() -> int:
         print("uso: verify_feed.py feed.json app.apk public.pem", file=sys.stderr)
         return 2
     feed_path, apk_path, pubkey = sys.argv[1:4]
-    feed = json.loads(Path(feed_path).read_text(encoding="utf-8"))
+    feed = json.loads(Path(feed_path).read_text(encoding="utf-8-sig"))
     for key in ("versionCode", "versionName", "apkUrl", "assetSize", "sha256", "signature"):
         if not feed.get(key):
             print(f"campo mancante/vuoto: {key}", file=sys.stderr)
