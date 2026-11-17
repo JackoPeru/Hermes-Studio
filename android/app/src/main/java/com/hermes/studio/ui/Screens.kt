@@ -539,13 +539,21 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
                                 }
                                 Text("${j.engine} · ${j.model}", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    LinearProgressIndicator(
-                                        progress = { ((j.progress ?: 0.0).toFloat()).coerceIn(0f, 1f) },
-                                        modifier = Modifier.weight(1f).height(6.dp).clip(CircleShape),
-                                        color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
-                                    )
+                                    val busyNoSteps = j.phase == "executing" || j.phase == "saving"
+                                    if (busyNoSteps) {
+                                        LinearProgressIndicator(
+                                            modifier = Modifier.weight(1f).height(6.dp).clip(CircleShape),
+                                            color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
+                                        )
+                                    } else {
+                                        LinearProgressIndicator(
+                                            progress = { ((j.progress ?: 0.0).toFloat()).coerceIn(0f, 1f) },
+                                            modifier = Modifier.weight(1f).height(6.dp).clip(CircleShape),
+                                            color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
+                                        )
+                                    }
                                     Spacer(Modifier.width(8.dp))
-                                    Text("${(((j.progress ?: 0.0) * 100).toInt())}%", color = AccentV, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    Text(phaseLabel(j), color = AccentV, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                                 }
                                 if (j.status in listOf("queued", "running", "preparing")) {
                                     TextButton(onClick = { scope.launch { try { repo.api().cancel(j.id); refresh() } catch (_: Exception) {} } }, contentPadding = PaddingValues(0.dp)) {
