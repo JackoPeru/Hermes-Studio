@@ -6,6 +6,8 @@ import json
 import logging
 import mimetypes
 import random
+
+import httpx
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -61,14 +63,22 @@ def _job_row_to_out(r) -> JobOut:
 async def _recover_once() -> dict:
     """Rimette in carreggiata i job interrotti (restart/crash).
 
-    preparing/running -> queued (reconcile via existing_mid, mai doppi submit);
+    preparing -> failed: il submit al manager può essere già passato ma senza
+    mid salvato non possiamo riconciliare; meglio perdere un render che
+    duplicarlo (violerebbe la serialità GPU).
+    running -> queued (reconcile via existing_mid, mai doppi submit).
     cancelling -> cancelled (+ cancel propagato al manager per non lasciare
     orfani su GPU). Ritorna conteggi e mid da cancellare per log/test.
     """
     cx = db.connect()
     try:
+        n0 = cx.execute(
+            "UPDATE jobs SET status='failed', error=?, phase=NULL, progress=0, updated_at=? "
+            "WHERE status='preparing'",
+            ("interrotto durante il submit: rilancia il job", db.now()),
+        ).rowcount
         n1 = cx.execute(
-            "UPDATE jobs SET status='queued', phase=NULL, updated_at=? WHERE status IN ('preparing','running')",
+            "UPDATE jobs SET status='queued', phase=NULL, progress=0, updated_at=? WHERE status='running'",
             (db.now(),),
         ).rowcount
         mids = [r[0] for r in cx.execute(
@@ -79,7 +89,7 @@ async def _recover_once() -> dict:
             (db.now(),),
         ).rowcount
         cx.commit()
-        return {"requeued": n1, "cancelled": n2, "cancel_mids": mids}
+        return {"requeued": n1, "cancelled": n2, "failed_submit": n0, "cancel_mids": mids}
     finally:
         cx.close()
 
@@ -95,9 +105,9 @@ async def _dispatch_loop() -> None:
     from .config import DB_PATH  # noqa
     await asyncio.sleep(1.0)
     counts = await _recover_once()
-    if counts["requeued"] or counts["cancelled"]:
-        _log.info("recovery: %d requeued, %d cancelled",
-                  counts["requeued"], counts["cancelled"])
+    if counts["requeued"] or counts["cancelled"] or counts.get("failed_submit"):
+        _log.info("recovery: %d requeued, %d cancelled, %d submit interrotti",
+                  counts["requeued"], counts["cancelled"], counts.get("failed_submit", 0))
     for mid in counts.get("cancel_mids", []):
         try:
             await _manager().cancel_job(mid)
@@ -282,10 +292,14 @@ async def _run_one_image(job_id: str) -> None:
                     p = await _stage_manager_input(job_id, aid_in, str(i + 1))
                     if p:
                         staged.append(p)
-                if not staged:
+                # Mai render con meno riferimenti del richiesto: cambierebbe
+                # significato (o fallirebbe con errore opaco del manager).
+                if len(staged) != len(aids):
                     cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
-                               ("immagini di partenza non trovate in libreria", db.now(), job_id))
+                               (f"immagini di partenza mancanti: {len(aids) - len(staged)}/{len(aids)}", db.now(), job_id))
                     cx.commit()
+                    for _s in staged:
+                        _unstage(_s)
                     return
                 submit_params = {**submit_params, "input_images": staged}
             try:
@@ -306,7 +320,7 @@ async def _run_one_image(job_id: str) -> None:
             # Flip condizionale: se nel frattempo è arrivato un cancel, non
             # sovrascrivere 'cancelling' — cancella il job manager e chiudi.
             cur = cx.execute(
-                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, phase='submitted', updated_at=? "
+                "UPDATE jobs SET status='running', comfy_prompt_id=?, phase='submitted', updated_at=? "
                 "WHERE id=? AND status='preparing'",
                 (mid, db.now(), job_id),
             )
@@ -346,6 +360,15 @@ async def _run_one_image(job_id: str) -> None:
                 return
             try:
                 st = await mgr.get_job(mid)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    # Manager riavviato/DB reset: il job non esiste più.
+                    # Fallire subito invece di bloccare la coda per 30/90 min.
+                    cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                               ("job perso dal manager (404): rilancia", db.now(), job_id))
+                    cx.commit()
+                    return
+                continue
             except Exception:
                 continue
             mstatus = str(st.get("status") or "")
@@ -355,8 +378,13 @@ async def _run_one_image(job_id: str) -> None:
             except (TypeError, ValueError):
                 prog = 0.0
             if prog > 0:
-                cx.execute("UPDATE jobs SET progress=?, phase=?, updated_at=? WHERE id=?",
-                           (max(0.05, min(0.99, prog)), mphase or None, db.now(), job_id))
+                # Fase solo se il manager la riporta: mai cancellare quella nota.
+                if mphase:
+                    cx.execute("UPDATE jobs SET progress=?, phase=?, updated_at=? WHERE id=?",
+                               (max(0.05, min(0.99, prog)), mphase, db.now(), job_id))
+                else:
+                    cx.execute("UPDATE jobs SET progress=?, updated_at=? WHERE id=?",
+                               (max(0.05, min(0.99, prog)), db.now(), job_id))
                 cx.commit()
             elif mphase:
                 cx.execute("UPDATE jobs SET phase=?, updated_at=? WHERE id=?",
@@ -371,9 +399,15 @@ async def _run_one_image(job_id: str) -> None:
                             str(st.get("error") or "")[:500], db.now(), job_id))
                 cx.commit()
                 return
-            cx.execute("UPDATE jobs SET progress=MAX(COALESCE(progress,0),0.1), updated_at=? WHERE id=?",
+            cx.execute("UPDATE jobs SET updated_at=? WHERE id=?",
                        (db.now(), job_id))
             cx.commit()
+        # Timeout: cancella il job sul manager, altrimenti continuerebbe a
+        # occupare la GPU mentre la coda passa al successivo.
+        try:
+            await mgr.cancel_job(mid)
+        except Exception as e:
+            _log.warning("timeout image: cancel manager %s fallita: %s", mid, e)
         cur = cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=? AND status IN ('running','preparing')",
                    ("timeout attesa manager image", db.now(), job_id))
         cx.commit()
@@ -419,15 +453,19 @@ async def _finish_image_job(cx, job_id: str, st: dict) -> None:
     import shutil as _sh
     rel = f"{job_id}_{safe_name(src.name)}"
     dest = (ASSETS_DIR / safe_name(rel)).resolve()
-    assert str(dest).startswith(str(ASSETS_DIR.resolve())), "path traversal blocked"
+    assert dest.is_relative_to(ASSETS_DIR.resolve()), "path traversal blocked"
     dest.parent.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(_sh.copy2, src, dest)
-    aid = db.new_id("ast")
-    cx.execute(
-        "INSERT INTO assets(id,kind,rel_path,job_id,created_at) VALUES(?,?,?,?,?)",
-        (aid, "image", rel, job_id, db.now()),
-    )
-    cx.commit()
+    ex = cx.execute("SELECT id FROM assets WHERE rel_path=?", (rel,)).fetchone()
+    if ex:
+        aid = ex["id"]
+    else:
+        aid = db.new_id("ast")
+        cx.execute(
+            "INSERT INTO assets(id,kind,rel_path,job_id,created_at) VALUES(?,?,?,?,?)",
+            (aid, "image", rel, job_id, db.now()),
+        )
+        cx.commit()
     try:
         from PIL import Image as _I
         with _I.open(dest) as _im:
@@ -445,6 +483,14 @@ async def _finish_image_job(cx, job_id: str, st: dict) -> None:
     )
     cx.commit()
     if cur.rowcount == 0:
+        # Cancel durante la copia: niente asset orfano in libreria.
+        cx.execute("DELETE FROM assets WHERE id=?", (aid,))
+        cx.commit()
+        for p in (dest, THUMBS_DIR / (safe_name(aid) + ".jpg")):
+            try:
+                p.unlink()
+            except OSError:
+                pass
         cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
                    (db.now(), job_id))
         cx.commit()
@@ -485,10 +531,12 @@ async def _run_one_video(job_id: str) -> None:
                 p = await _stage_manager_input(job_id, aid_in, str(i + 1))
                 if p:
                     staged.append(p)
-            if mode != "t2v" and mode != "v2v" and not staged:
+            if mode not in ("t2v", "v2v") and len(staged) != len(aids):
                 cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
-                           ("immagine di partenza non trovata in libreria", db.now(), job_id))
+                           (f"immagini di partenza mancanti: {len(aids) - len(staged)}/{len(aids)}", db.now(), job_id))
                 cx.commit()
+                for _s in staged:
+                    _unstage(_s)
                 return
             preset = params.get("video_preset") or "journey_video_preview"
             mparams = {
@@ -533,7 +581,7 @@ async def _run_one_video(job_id: str) -> None:
             # Flip condizionale: se nel frattempo è arrivato un cancel, non
             # sovrascrivere 'cancelling' — cancella il job manager e chiudi.
             cur = cx.execute(
-                "UPDATE jobs SET status='running', comfy_prompt_id=?, progress=0.05, phase='submitted', updated_at=? "
+                "UPDATE jobs SET status='running', comfy_prompt_id=?, phase='submitted', updated_at=? "
                 "WHERE id=? AND status='preparing'",
                 (mid, db.now(), job_id),
             )
@@ -572,6 +620,15 @@ async def _run_one_video(job_id: str) -> None:
                 return
             try:
                 st = await mgr.get_job(mid)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    # Manager riavviato/DB reset: il job non esiste più.
+                    # Fallire subito invece di bloccare la coda per 30/90 min.
+                    cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                               ("job perso dal manager (404): rilancia", db.now(), job_id))
+                    cx.commit()
+                    return
+                continue
             except Exception:
                 continue
             mstatus = str(st.get("status") or "")
@@ -581,8 +638,13 @@ async def _run_one_video(job_id: str) -> None:
             except (TypeError, ValueError):
                 prog = 0.0
             if prog > 0:
-                cx.execute("UPDATE jobs SET progress=?, phase=?, updated_at=? WHERE id=?",
-                           (max(0.05, min(0.99, prog)), mphase or None, db.now(), job_id))
+                # Fase solo se il manager la riporta: mai cancellare quella nota.
+                if mphase:
+                    cx.execute("UPDATE jobs SET progress=?, phase=?, updated_at=? WHERE id=?",
+                               (max(0.05, min(0.99, prog)), mphase, db.now(), job_id))
+                else:
+                    cx.execute("UPDATE jobs SET progress=?, updated_at=? WHERE id=?",
+                               (max(0.05, min(0.99, prog)), db.now(), job_id))
                 cx.commit()
             elif mphase:
                 cx.execute("UPDATE jobs SET phase=?, updated_at=? WHERE id=?",
@@ -597,9 +659,13 @@ async def _run_one_video(job_id: str) -> None:
                             str(st.get("error") or "")[:500], db.now(), job_id))
                 cx.commit()
                 return
-            cx.execute("UPDATE jobs SET progress=MAX(COALESCE(progress,0),0.1), updated_at=? WHERE id=?",
+            cx.execute("UPDATE jobs SET updated_at=? WHERE id=?",
                        (db.now(), job_id))
             cx.commit()
+        try:
+            await mgr.cancel_job(mid)
+        except Exception as e:
+            _log.warning("timeout video: cancel manager %s fallita: %s", mid, e)
         cur = cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=? AND status IN ('running','preparing')",
                    ("timeout attesa manager video", db.now(), job_id))
         cx.commit()
@@ -663,13 +729,13 @@ async def _finish_video_job(cx, job_id: str, st: dict) -> None:
     if src.suffix.lower() in (".mp4", ".webm", ".mov", ".mkv", ".m4v"):
         rel = f"{job_id}_{safe_name(src.name)}"
         dest = (ASSETS_DIR / safe_name(rel)).resolve()
-        assert str(dest).startswith(str(ASSETS_DIR.resolve())), "path traversal blocked"
+        assert dest.is_relative_to(ASSETS_DIR.resolve()), "path traversal blocked"
         dest.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(_sh.copy2, src, dest)
     else:
         rel = f"{job_id}_video.mp4"
         dest = (ASSETS_DIR / safe_name(rel)).resolve()
-        assert str(dest).startswith(str(ASSETS_DIR.resolve())), "path traversal blocked"
+        assert dest.is_relative_to(ASSETS_DIR.resolve()), "path traversal blocked"
         dest.parent.mkdir(parents=True, exist_ok=True)
         import subprocess as _sp
         try:
@@ -687,13 +753,17 @@ async def _finish_video_job(cx, job_id: str, st: dict) -> None:
             cx.commit()
             return
     meta = await asyncio.to_thread(probe_video, dest)
-    aid = db.new_id("ast")
-    cx.execute(
-        "INSERT INTO assets(id,kind,rel_path,job_id,width,height,duration,created_at) VALUES(?,?,?,?,?,?,?,?)",
-        (aid, "video", rel, job_id, meta.get("width"), meta.get("height"),
-         meta.get("duration"), db.now()),
-    )
-    cx.commit()
+    ex = cx.execute("SELECT id FROM assets WHERE rel_path=?", (rel,)).fetchone()
+    if ex:
+        aid = ex["id"]
+    else:
+        aid = db.new_id("ast")
+        cx.execute(
+            "INSERT INTO assets(id,kind,rel_path,job_id,width,height,duration,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (aid, "video", rel, job_id, meta.get("width"), meta.get("height"),
+             meta.get("duration"), db.now()),
+        )
+        cx.commit()
     th = await asyncio.to_thread(video_thumb, dest, aid)
     _ = th
     # Terminale condizionale: un cancel arrivato durante copia/ffmpeg vince sul done.
@@ -704,6 +774,13 @@ async def _finish_video_job(cx, job_id: str, st: dict) -> None:
     )
     cx.commit()
     if cur.rowcount == 0:
+        cx.execute("DELETE FROM assets WHERE id=?", (aid,))
+        cx.commit()
+        for p in (dest, THUMBS_DIR / (safe_name(aid) + ".jpg")):
+            try:
+                p.unlink()
+            except OSError:
+                pass
         cx.execute("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?",
                    (db.now(), job_id))
         cx.commit()
@@ -730,7 +807,11 @@ async def lifespan(app: FastAPI):
         except Exception:
             _log.exception("worker: errore in shutdown")
 
-app = FastAPI(title="Hermes Studio", version=BACKEND_VERSION, lifespan=lifespan)
+app = FastAPI(
+    title="Hermes Studio", version=BACKEND_VERSION, lifespan=lifespan,
+    # Nessuna superficie non autenticata: docs/openapi disabilitati.
+    docs_url=None, redoc_url=None, openapi_url=None,
+)
 # Private LAN client (native app). No wildcard CORS for browsers; app is native.
 # OPTIONS incluso per preflight di eventuali WebView/debug locali.
 app.add_middleware(
@@ -888,25 +969,27 @@ async def create_job(body: JobCreate, _: None = Depends(require_auth)):
         # devono essere immagini), altrimenti 404/422 subito invece di un
         # ciclo seriale sprecato nel worker.
         if body.asset_ids:
+            if not is_video and len(body.asset_ids) > 10:
+                raise HTTPException(422, "massimo 10 immagini di riferimento")
             for aid in body.asset_ids[:10]:
                 r = cx.execute("SELECT kind FROM assets WHERE id=?", (aid,)).fetchone()
                 if not r:
                     raise HTTPException(404, f"asset di partenza non trovato: {aid}")
-                if is_video and r["kind"] != "image":
-                    raise HTTPException(422, f"lo start frame deve essere un'immagine: {aid}")
+                if r["kind"] != "image":
+                    raise HTTPException(422, f"l'asset di partenza deve essere un'immagine: {aid}")
     finally:
         cx.close()
     if is_video:
         mode = _video_mode(body)
         # Requisiti per modalità: fail-fast prima di accodare.
         if mode == "i2v":
-            if not body.asset_ids:
-                raise HTTPException(422, "immagine → video richiede 1 immagine di partenza")
+            if len(body.asset_ids) != 1:
+                raise HTTPException(422, "immagine → video richiede esattamente 1 immagine di partenza")
             asset_ids = body.asset_ids[:1]
             w, h = _norm_wh(body.width or 1344, body.height or 768, _VIDEO_AREA_CAP_PX)
         elif mode == "first_last":
-            if len(body.asset_ids) < 2:
-                raise HTTPException(422, "primo/ultimo frame richiede 2 immagini")
+            if len(body.asset_ids) != 2:
+                raise HTTPException(422, "primo/ultimo frame richiede esattamente 2 immagini")
             asset_ids = body.asset_ids[:2]
             w, h = _norm_wh(body.width or 1344, body.height or 768, _VIDEO_AREA_CAP_PX)
         elif mode == "ref2va":
@@ -987,7 +1070,7 @@ async def create_job(body: JobCreate, _: None = Depends(require_auth)):
 
 
 @app.get("/api/v1/jobs", response_model=list[JobOut])
-async def list_jobs(limit: int = Query(50, le=200), _: None = Depends(require_auth)):
+async def list_jobs(limit: int = Query(50, ge=1, le=200), _: None = Depends(require_auth)):
     cx = db.connect()
     try:
         rows = cx.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
@@ -1033,7 +1116,9 @@ async def cancel_job(jid: str, _: None = Depends(require_auth)):
 @app.get("/api/v1/events")
 async def events(_: None = Depends(require_auth)):
     async def gen():
-        last = 0.0
+        # Solo eventi nuovi: senza seed si ri-trasmetteva tutta la storia
+        # (e l'app faceva 2 richieste per ogni evento vecchio).
+        last = db.now()
         beats = 0
         try:
             while True:
@@ -1109,12 +1194,24 @@ async def upload_asset(f: UploadFile = File(...), _: None = Depends(require_auth
         except OSError:
             pass
         raise HTTPException(415, "solo JPEG/PNG/WebP")
+    # Header valido non basta: un JPEG troncato passerebbe e resterebbe in
+    # libreria senza dimensioni né thumbnail. verify() lo blocca subito.
+    try:
+        from PIL import Image as _I
+        with _I.open(staging) as _im:
+            _im.verify()
+    except Exception:
+        try:
+            staging.unlink()
+        except OSError:
+            pass
+        raise HTTPException(422, "immagine non decodificabile")
     # Upload indicizzati: diventano subito elementi di libreria (job_id NULL),
     # usabili come start frame / riferimento.
     aid = db.new_id("ast")
     rel = safe_name(aid) + ext
     dest = (ASSETS_DIR / rel).resolve()
-    assert str(dest).startswith(str(ASSETS_DIR.resolve())), "path traversal blocked"
+    assert dest.is_relative_to(ASSETS_DIR.resolve()), "path traversal blocked"
     staging.replace(dest)
     w = h = None
     try:
@@ -1138,20 +1235,24 @@ async def upload_asset(f: UploadFile = File(...), _: None = Depends(require_auth
 
 @app.get("/api/v1/assets", response_model=list[AssetOut])
 async def list_assets(kind: str | None = None, favorite: bool = False,
+                      limit: int = Query(500, ge=1, le=2000),
                       _: None = Depends(require_auth)):
     cx = db.connect()
     try:
         if favorite and kind:
             rows = cx.execute(
                 "SELECT a.* FROM assets a JOIN favorites f ON f.asset_id=a.id "
-                "WHERE a.kind=? ORDER BY a.created_at DESC", (kind,)).fetchall()
+                "WHERE a.kind=? ORDER BY a.created_at DESC LIMIT ?", (kind, limit)).fetchall()
         elif favorite:
             rows = cx.execute(
-                "SELECT a.* FROM assets a JOIN favorites f ON f.asset_id=a.id ORDER BY a.created_at DESC").fetchall()
+                "SELECT a.* FROM assets a JOIN favorites f ON f.asset_id=a.id "
+                "ORDER BY a.created_at DESC LIMIT ?", (limit,)).fetchall()
         elif kind:
-            rows = cx.execute("SELECT * FROM assets WHERE kind=? ORDER BY created_at DESC", (kind,)).fetchall()
+            rows = cx.execute("SELECT * FROM assets WHERE kind=? ORDER BY created_at DESC LIMIT ?",
+                              (kind, limit)).fetchall()
         else:
-            rows = cx.execute("SELECT * FROM assets ORDER BY created_at DESC").fetchall()
+            rows = cx.execute("SELECT * FROM assets ORDER BY created_at DESC LIMIT ?",
+                              (limit,)).fetchall()
         out = []
         for r in rows:
             out.append(_asset_row_to_out(r))
@@ -1161,13 +1262,15 @@ async def list_assets(kind: str | None = None, favorite: bool = False,
 
 
 def _asset_row_to_out(r) -> AssetOut:
-    th = THUMBS_DIR / (r["id"] + ".jpg")
     try:
         duration = r["duration"]
     except (IndexError, KeyError):
         duration = None
+    # URL sempre presente per immagini/video: se il thumb manca, l'endpoint
+    # lo rigenera (prima il client non lo chiamava mai e restava senza).
+    th = f"/api/v1/assets/{r['id']}/thumbnail" if r["kind"] in ("image", "video") else None
     return AssetOut(id=r["id"], kind=r["kind"], path=f"/api/v1/assets/{r['id']}/download",
-                    thumb=f"/api/v1/assets/{r['id']}/thumbnail" if th.exists() else None,
+                    thumb=th,
                     job_id=r["job_id"], width=r["width"], height=r["height"],
                     duration=duration, created_at=db.iso(r["created_at"]))
 
@@ -1237,7 +1340,7 @@ def _library_clean(rel: str) -> str:
 
 def _library_path(rel: str) -> Path:
     cand = (LIBRARY_ROOT / _library_clean(rel)).resolve()
-    if cand != LIBRARY_ROOT and not str(cand).startswith(str(LIBRARY_ROOT) + "/"):
+    if not cand.is_relative_to(LIBRARY_ROOT):
         raise HTTPException(403, "fuori dalla libreria")
     return cand
 
@@ -1306,7 +1409,7 @@ async def library_import(body: LibraryImport, _: None = Depends(require_auth)):
         if ex:
             return _asset_row_to_out(ex)
         dest = (ASSETS_DIR / safe_name(rel)).resolve()
-        if not str(dest).startswith(str(ASSETS_DIR.resolve()) + "/"):
+        if not dest.is_relative_to(ASSETS_DIR.resolve()):
             raise HTTPException(400, "percorso non valido")
         dest.parent.mkdir(parents=True, exist_ok=True)
         import shutil as _sh
@@ -1319,12 +1422,20 @@ async def library_import(body: LibraryImport, _: None = Depends(require_auth)):
                 w, h = im.size
         except Exception:
             pass
-        cx.execute(
-            "INSERT INTO assets(id,kind,rel_path,job_id,width,height,created_at) VALUES(?,?,?,?,?,?,?)",
-            (aid, "image", rel, None, w, h, db.now()),
-        )
-        cx.commit()
-        row = cx.execute("SELECT * FROM assets WHERE id=?", (aid,)).fetchone()
+        try:
+            cx.execute(
+                "INSERT INTO assets(id,kind,rel_path,job_id,width,height,created_at) VALUES(?,?,?,?,?,?,?)",
+                (aid, "image", rel, None, w, h, db.now()),
+            )
+            cx.commit()
+            row = cx.execute("SELECT * FROM assets WHERE id=?", (aid,)).fetchone()
+        except Exception:
+            # Import concorrente dello stesso file: l'indice univoco vince.
+            cx.rollback()
+            row = cx.execute("SELECT * FROM assets WHERE rel_path=?", (rel,)).fetchone()
+            if row is None:
+                raise
+            aid = row["id"]
     finally:
         cx.close()
     await asyncio.to_thread(make_thumb, dest, aid)
@@ -1385,9 +1496,9 @@ async def delete_asset(aid: str, _: None = Depends(require_auth)):
 
 @app.post("/api/v1/maintenance/prune", response_model=PruneOut)
 async def prune(body: PruneIn, _: None = Depends(require_auth)):
-    """Pulizia conservativa: job terminali vecchi + upload orfani vecchi.
+    """Pulizia conservativa: job terminali vecchi + file orfani vecchi.
 
-    Mai toccati: job attivi (queued/preparing/running/cancelling), asset,
+    Mai toccati: job attivi (queued/preparing/running/cancelling), asset noti,
     thumbnail, progetti. Gli asset restano anche se il job che li ha creati
     viene potato (provenienza via job_id conservata nella riga asset).
     """
@@ -1413,19 +1524,30 @@ async def prune(body: PruneIn, _: None = Depends(require_auth)):
     deleted_uploads = 0
     freed = 0
     ucut = _time.time() - body.prune_uploads_older_than_days * 86400
+    cx = db.connect()
     try:
-        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        for p in UPLOADS_DIR.iterdir():
+        known = {r[0] for r in cx.execute("SELECT rel_path FROM assets").fetchall()}
+    finally:
+        cx.close()
+    # Orfani veri: file in assets dir senza riga DB (upload interrotti,
+    # copie fallite) e staging lasciato da un crash. Gli asset noti restano.
+    roots = [ASSETS_DIR, Path.home() / ".hermes" / "hermes-studio-in"]
+    for root in roots:
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for p in entries:
             try:
-                if not p.is_file() or p.stat().st_mtime >= ucut:
+                if not p.is_file() or p.is_symlink() or p.stat().st_mtime >= ucut:
+                    continue
+                if root == ASSETS_DIR and p.name in known:
                     continue
                 freed += p.stat().st_size
                 p.unlink()
                 deleted_uploads += 1
             except OSError:
                 continue
-    except OSError:
-        pass
     return PruneOut(deleted_jobs=deleted_jobs, deleted_uploads=deleted_uploads, freed_bytes=freed)
 
 
@@ -1445,13 +1567,16 @@ async def list_projects(_: None = Depends(require_auth)):
 
 @app.post("/api/v1/projects", response_model=ProjectOut, status_code=201)
 async def create_project(body: ProjectIn, _: None = Depends(require_auth)):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(422, "nome progetto vuoto")
     cx = db.connect()
     try:
         pid = db.new_id("prj")
         ts = db.now()
-        cx.execute("INSERT INTO projects(id,name,created_at) VALUES(?,?,?)", (pid, body.name, ts))
+        cx.execute("INSERT INTO projects(id,name,created_at) VALUES(?,?,?)", (pid, name, ts))
         cx.commit()
-        return ProjectOut(id=pid, name=body.name, created_at=db.iso(ts), asset_ids=[])
+        return ProjectOut(id=pid, name=name, created_at=db.iso(ts), asset_ids=[])
     finally:
         cx.close()
 

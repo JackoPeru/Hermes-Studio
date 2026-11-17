@@ -54,7 +54,7 @@ _init_done_for: dict[str, tuple] = {}
 # Colonne attese (tabella, colonna, DDL): DB vecchi vengono completati,
 # mai ricreati. Chiave di cache: path + mtime (se il file cambia, re-init).
 _EXPECTED_COLUMNS: list[tuple[str, str, str]] = [
-    ("jobs", "idempotency_key", "TEXT UNIQUE"),
+    ("jobs", "idempotency_key", "TEXT"),
     ("jobs", "comfy_prompt_id", "TEXT"),
     ("jobs", "progress", "REAL"),
     ("jobs", "phase", "TEXT"),
@@ -75,6 +75,16 @@ def _migrate(cx: sqlite3.Connection) -> None:
         if table in {r[0] for r in cx.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'").fetchall()} and col not in cols:
             cx.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+    # Indici univoci dopo le colonne: su DB legacy con duplicati non devono
+    # impedire l'avvio (si logga e si prosegue; i duplicati restano visibili).
+    for stmt in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_rel_path ON assets(rel_path)",
+    ):
+        try:
+            cx.execute(stmt)
+        except (sqlite3.IntegrityError, sqlite3.OperationalError):
+            pass
 
 
 def connect() -> sqlite3.Connection:

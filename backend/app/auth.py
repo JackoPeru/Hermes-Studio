@@ -42,13 +42,17 @@ def get_or_create_token() -> str:
     global _cached_token, _cached_mtime
     p = _token_path()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tok = secrets.token_urlsafe(32)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(tok)
     try:
-        os.chmod(tmp, 0o600)
+        os.chmod(DATA_DIR, 0o700)
     except OSError:
         pass
+    tok = secrets.token_urlsafe(32)
+    tmp = p.with_suffix(f".{os.getpid()}.tmp")
+    # O_EXCL + mode 0600: il segreto non è mai leggibile da altri, nemmeno
+    # nella finestra prima del rename atomico.
+    fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as fh:
+        fh.write(tok)
     os.replace(tmp, p)
     try:
         os.chmod(p, 0o600)

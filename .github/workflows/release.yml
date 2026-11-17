@@ -10,6 +10,8 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Mai pubblicare da branch diversi da main (il feed pusha su main).
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
     env:
@@ -42,7 +44,26 @@ jobs:
       - name: Decode keystore
         shell: bash
         run: |
+          set -euo pipefail
+          # Fail-closed: senza keystore la build userebbe la debug-key e
+          # romperebbe l'aggiornamento delle installazioni esistenti.
+          test -n "${HERMES_KEYSTORE_PASSWORD:-}" || { echo "::error::HERMES_KEYSTORE_PASSWORD mancante"; exit 1; }
+          test -n "${HERMES_KEY_ALIAS:-}" || { echo "::error::HERMES_KEY_ALIAS mancante"; exit 1; }
+          test -n "${HERMES_KEY_PASSWORD:-}" || { echo "::error::HERMES_KEY_PASSWORD mancante"; exit 1; }
+          test -n "${{ secrets.HERMES_KEYSTORE_BASE64 }}" || { echo "::error::HERMES_KEYSTORE_BASE64 mancante"; exit 1; }
           echo "${{ secrets.HERMES_KEYSTORE_BASE64 }}" | base64 --decode > "$HERMES_KEYSTORE_PATH"
+          test -s "$HERMES_KEYSTORE_PATH" || { echo "::error::keystore vuoto"; exit 1; }
+
+      - name: Compute release notes (dal tag precedente)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREV="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          RANGE="${PREV:+$PREV..HEAD}"
+          RANGE="${RANGE:-HEAD}"
+          git log --format=%s $RANGE | grep -vE '^(Publish update|Update feed|Merge )' | head -12 > /tmp/notes.txt || true
+          test -s /tmp/notes.txt || echo "Miglioramenti e rifiniture." > /tmp/notes.txt
+          echo "NOTE:"; cat /tmp/notes.txt
 
       - name: Build debug APK (firma stabile, versionCode release)
         working-directory: android
@@ -63,7 +84,7 @@ jobs:
         run: |
           gh release create "studio-${HERMES_VERSION_CODE}" "HermesStudio-${HERMES_VERSION_CODE}.apk" \
             --title "Hermes Studio ${HERMES_VERSION_NAME} (${HERMES_VERSION_CODE})" \
-            --notes "V1 + auto-update in-app (feed updates/latest.json, stessa repo)." \
+            --notes-file /tmp/notes.txt \
             --latest
 
       - name: Update same-repo update feed
@@ -77,13 +98,12 @@ jobs:
           APK_SIZE="$(stat -c%s "${GITHUB_WORKSPACE}/${APK_NAME}")"
           APK_SHA="$(sha256sum "${GITHUB_WORKSPACE}/${APK_NAME}" | cut -d' ' -f1)"
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${APK_NAME}"
-          git log --format=%s -n 8 > /tmp/subjects.txt
+          git log --format=%s "$(git describe --tags --abbrev=0 2>/dev/null || echo HEAD)..HEAD" \
+            | grep -vE '^(Publish update|Update feed|Merge )' | head -12 > /tmp/subjects.txt || true
           python3 - > /tmp/notes.json <<'PYEOF'
           import json
           lines = [l.strip() for l in open("/tmp/subjects.txt") if l.strip()]
-          skip = ("Publish update", "Update feed", "Merge ")
-          notes = [l for l in lines if not l.startswith(skip)][:6]
-          print(json.dumps(notes or ["Miglioramenti e rifiniture."], ensure_ascii=False))
+          print(json.dumps(lines[:6] or ["Miglioramenti e rifiniture."], ensure_ascii=False))
           PYEOF
           NOTES_JSON="$(cat /tmp/notes.json)"
           mkdir -p "${GITHUB_WORKSPACE}/updates"

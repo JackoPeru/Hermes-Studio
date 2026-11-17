@@ -23,7 +23,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
@@ -93,6 +93,8 @@ class StudioRepo(private val ctx: Context) {
     private var cachedToken = "__unset__"
     private var cachedLoader: ImageLoader? = null
     private var loaderToken = "__unset__"
+    private var cachedClient: OkHttpClient? = null
+    private var clientKey = ""
 
     suspend fun baseUrl(): String =
         ctx.store.data.map { it[KEY_BASE] ?: "http://hermes.tail85940c.ts.net:8650/" }.first().let {
@@ -109,6 +111,11 @@ class StudioRepo(private val ctx: Context) {
         b.toHttpUrl()
         ctx.store.edit { it[KEY_BASE] = b; it[KEY_TOKEN] = token.trim() }
         cachedApi = null; cachedLoader = null
+        cachedClient?.let {
+            runCatching { it.dispatcher.executorService.shutdown() }
+            it.connectionPool.evictAll()
+        }
+        cachedClient = null; clientKey = ""
     }
 
     private fun buildClient(tok: String): OkHttpClient =
@@ -150,7 +157,7 @@ class StudioRepo(private val ctx: Context) {
     suspend fun imageLoader(): ImageLoader {
         val tok = token()
         if (cachedLoader != null && tok == loaderToken) return cachedLoader!!
-        val loader = ImageLoader.Builder(ctx).okHttpClient(buildClient(tok)).crossfade(true).build()
+        val loader = ImageLoader.Builder(ctx).okHttpClient(authedClient()).crossfade(true).build()
         cachedLoader = loader; loaderToken = tok
         return loader
     }
@@ -167,7 +174,13 @@ class StudioRepo(private val ctx: Context) {
         return baseUrl()
     }
 
-    suspend fun authedClient(): OkHttpClient = buildClient(token())
+    suspend fun authedClient(): OkHttpClient {
+        val key = baseUrl() + "|" + token()
+        cachedClient?.let { if (clientKey == key) return it }
+        val cli = buildClient(token())
+        cachedClient = cli; clientKey = key
+        return cli
+    }
 
     suspend fun deleteAsset(id: String) {
         api().deleteAsset(id)
@@ -184,27 +197,37 @@ class StudioRepo(private val ctx: Context) {
             mime == "image/webp" -> ".webp"
             else -> throw IllegalStateException("Solo JPEG/PNG/WebP")
         }
-        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: throw IllegalStateException("File non leggibile")
-        if (bytes.size > 25 * 1024 * 1024) throw IllegalStateException("File oltre 25 MB")
-        val part = MultipartBody.Part.createFormData(
-            "f", "upload$ext", bytes.toRequestBody(mime.toMediaType()))
-        api().upload(part)
+        val tmp = java.io.File(ctx.cacheDir, "upload-${System.currentTimeMillis()}$ext")
+        try {
+            var total = 0L
+            val input = resolver.openInputStream(uri) ?: throw IllegalStateException("File non leggibile")
+            input.use { src ->
+                tmp.outputStream().use { out ->
+                    val buf = ByteArray(256 * 1024)
+                    while (true) {
+                        val n = src.read(buf)
+                        if (n <= 0) break
+                        total += n
+                        if (total > 25L * 1024 * 1024) throw IllegalStateException("File oltre 25 MB")
+                        out.write(buf, 0, n)
+                    }
+                }
+            }
+            if (total == 0L) throw IllegalStateException("File vuoto")
+            val part = MultipartBody.Part.createFormData(
+                "f", "upload$ext", tmp.asRequestBody(mime.toMediaType()))
+            api().upload(part)
+        } finally {
+            tmp.delete()
+        }
     }
 
-    /** SSE live: client dedicato senza read timeout (standard SSE) + watchdog in UI. */
+    /** SSE live: sopra il client condiviso, senza read timeout (standard SSE). */
     suspend fun watchEvents(listener: EventSourceListener): EventSource {
-        val tok = token()
-        val cli = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
+        // newBuilder condivide dispatcher/pool: niente client nuovo a ogni connessione.
+        val cli = authedClient().newBuilder()
             .readTimeout(0, TimeUnit.MINUTES)
-            .writeTimeout(60, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .addInterceptor(Interceptor { c ->
-                val r = c.request().newBuilder()
-                if (tok.isNotBlank()) r.addHeader("Authorization", "Bearer $tok")
-                c.proceed(r.build())
-            }).build()
+            .build()
         val req = Request.Builder().url(baseUrl().trimEnd('/') + "/api/v1/events").build()
         return EventSources.createFactory(cli).newEventSource(req, listener)
     }

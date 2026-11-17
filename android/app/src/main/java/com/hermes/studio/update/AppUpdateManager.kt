@@ -23,6 +23,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.hermes.studio.MainActivity
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -129,7 +131,8 @@ class AppUpdateManager(private val appContext: Context) {
         val release = state.value.availableRelease ?: return
         state.value.downloadedApkPath?.let(::File)?.takeIf { it.exists() }?.let { return }
         _state.update { it.copy(isDownloading = true, downloadProgress = 0f, downloadLabel = "", lastError = null, statusMessage = "Download aggiornamento in corso...") }
-        runCatching { downloadReleaseApk(release) }.onSuccess { file ->
+        try {
+            val file = downloadReleaseApk(release)
             val currentVersionCode = currentVersionCode()
             cleanupDownloadedUpdates(setOf(release.versionCode, currentVersionCode))
             val rollbackApk = storedUpdateApks(false).firstOrNull { it.versionCode == currentVersionCode }
@@ -144,7 +147,10 @@ class AppUpdateManager(private val appContext: Context) {
                     lastError = null
                 )
             }
-        }.onFailure { error ->
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            _state.update { it.copy(isDownloading = false, downloadProgress = 0f, statusMessage = "Download annullato.") }
+            throw e
+        } catch (error: Throwable) {
             _state.update { it.copy(isDownloading = false, downloadProgress = 0f, statusMessage = "Download aggiornamento fallito.", lastError = error.message ?: "Errore sconosciuto.") }
         }
     }
@@ -281,6 +287,7 @@ class AppUpdateManager(private val appContext: Context) {
                     val buf = ByteArray(DEFAULT_BUFFER_SIZE)
                     var n = input.read(buf)
                     while (n >= 0) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
                         output.write(buf, 0, n); downloaded += n
                         _state.update { it.copy(isDownloading = true, downloadProgress = if (totalBytes > 0L) (downloaded.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f, downloadLabel = "${Formatter.formatFileSize(appContext, downloaded)} / ${Formatter.formatFileSize(appContext, totalBytes)}", downloadedApkPath = null) }
                         n = input.read(buf)

@@ -1,12 +1,12 @@
 # Hermes Studio — V3
 
-App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per generare immagini (Qwen-Image 2.1 text/edit, fino al 2K) e video (MiniMax H3 turbo image-to-video, 720p/480p) via ComfyUI sul server `hermes`.
+App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per generare immagini (Qwen-Image 2.1 text/edit, fino al 2K) e video (MiniMax H3: i2v, first/last, reference, t2v, v2v reframe) via ComfyUI sul server `hermes`.
 
 ## Struttura
 - `backend/` FastAPI `/api/v1/*` (jobs persistenti SQLite WAL, ComfyUIAdapter, coda seriale, SSE, assets+thumbs, progetti/preferiti).
 - `android/` app nativa: Home, Crea unificata (immagine/video con selettore), Libreria, Impostazioni (pairing + GPU live + **auto-update in-app**). Nessuna WebView.
 - `docs/DISCOVERY.md` ricognizione reale, `docs/API.md` contratto, `docs/PAIRING.md` pairing Tailscale, `docs/RUNBOOK.md` operativo, `docs/UPDATE.md` auto-update, `docs/VIDEO_H3.md` pipeline video verificata.
-- `tests/test_backend.py` 29 test verdi (recovery, cancel, race, auth, prune, staging, enqueue). `.env.example` per tutte le env.
+- `tests/test_backend.py` test verdi (recovery, cancel, race, auth, prune, staging, libreria Hub, migrazioni DB). `.env.example` per tutte le env.
 
 ## V2 (superata: il ritocco era disabilitato, ora in V3; vale il resto)
 - Dettaglio job (tap in coda: stato/progresso reali, output, annulla, riusa) e dettaglio asset (player video in-app, scarica in galleria, condividi, preferito, assegna a progetto, riusa, elimina, fullscreen con zoom per le immagini).
@@ -14,23 +14,23 @@ App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per g
 ## V3 (corrente)
 - Ritocco immagini (preset edit Qwen con start frame), upload foto dal telefono indicizzate in libreria.
 - Video: durate 3/5/8s, formati 720p/480p; player in-app, durate reali ovunque.
-- Quadro GPU live in Impostazioni, pulizia cronologia, note release dal changelog.
+- Quadro GPU live in Impostazioni, pulizia cronologia, note release generate dai commit dal tag precedente.
 - SSE live (`GET /events` + fallback poll 15s) invece di polling cieco; niente recompose a vuoto, request Coil stabili, ricerca Libreria client-side.
 - `DELETE /api/v1/assets/{id}` + `GET /api/v1/assets/{id}` con test.
 
 ## Prerequisiti
-- Server: Python 3.12, ComfyUI `:8188`, gpu-manager `:8643`, systemd.
+- Server: Python 3.12, ComfyUI `:8188`, gpu-manager `:8643`, `ffmpeg`/`ffprobe` (conversione video + thumbnail), systemd.
 - App: JDK Temurin 17, Android SDK 35, Tailscale sullo stesso tailnet.
 
 ## Env backend (vedi `.env.example`)
-`HERMES_STUDIO_DATA/HOST/PORT/COMFY_URL/MANAGER_URL/MANAGER_KEY/MAX_UPLOAD_MB/BEARER`.
+`HERMES_STUDIO_DATA/HOST/PORT/COMFY_URL/MANAGER_URL/MANAGER_KEY/MAX_UPLOAD_MB/BEARER/LIBRARY_ROOT`.
 
 ## Avvio backend (sul server, DOPO ok esplicito — non eseguire senza autorizzazione)
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
+python3 -m venv backend/.venv && . backend/.venv/bin/activate
 pip install -r backend/requirements.txt
-HERMES_STUDIO_DATA=/var/lib/hermes-studio HERMES_STUDIO_HOST=127.0.0.1 HERMES_STUDIO_PORT=8650 \
-  uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8650
+set -a; . /etc/hermes/hermes-studio.env; set +a   # include HERMES_STUDIO_MANAGER_KEY
+uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8650
 # token in HERMES_STUDIO_BEARER (env) o $DATA/bearer.token (0600, creato al primo avvio); incollarlo nell'app in Impostazioni.
 # Tailscale Serve HTTP privato in tailnet (l'app usa http://): vedi docs/PAIRING.md.
 ```

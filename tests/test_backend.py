@@ -114,14 +114,20 @@ def test_image_edit_mode_maps_preset(client):
     assert json.loads(row["params"])["image_preset"] == "edit_image"
 
 def test_upload_limits_and_sniffing(client):
-    big = b"\xff\xd8\xff" + b"0" * 10
-    r = client.post("/api/v1/assets/upload", files={"f": ("a.jpg", big, "image/jpeg")})
+    from io import BytesIO
+    from PIL import Image
+    buf = BytesIO()
+    Image.new("RGB", (8, 8), (20, 40, 60)).save(buf, "PNG")
+    r = client.post("/api/v1/assets/upload", files={"f": ("a.png", buf.getvalue(), "image/png")})
     assert r.status_code == 200
     j = r.json()
     assert j["asset_id"]  # upload indicizzati in libreria
     assert client.get(f"/api/v1/assets/{j['asset_id']}").status_code == 200
     r = client.post("/api/v1/assets/upload", files={"f": ("a.txt", b"hello world", "text/plain")})
     assert r.status_code == 415
+    # Header JPEG valido ma file troncato: rifiutato, mai in libreria.
+    r = client.post("/api/v1/assets/upload", files={"f": ("t.jpg", b"\xff\xd8\xff" + b"0" * 10, "image/jpeg")})
+    assert r.status_code == 422
 
 def test_norm_wh_area_cap():
     import app.main as m
@@ -405,9 +411,9 @@ def test_prune_jobs_and_uploads(client, tmp_path):
     old_failed = _old_job(client, "failed", 40)
     old_done = _old_job(client, "completed", 40)
     new_failed = _old_job(client, "failed", 1)
-    cfg.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    old_up = cfg.UPLOADS_DIR / "old.bin"
-    new_up = cfg.UPLOADS_DIR / "new.bin"
+    cfg.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    old_up = cfg.ASSETS_DIR / "old.bin"
+    new_up = cfg.ASSETS_DIR / "new.bin"
     old_up.write_bytes(b"0" * 100)
     new_up.write_bytes(b"0" * 50)
     old_t = dbmod.now() - 10 * 86400
@@ -447,14 +453,14 @@ async def test_recovery_requeues_and_cancels(client):
     finally:
         cx.close()
     out = await m._recover_once()
-    assert out["requeued"] == 3 and out["cancelled"] == 1
+    assert out["requeued"] == 2 and out["failed_submit"] == 1 and out["cancelled"] == 1
     assert out["cancel_mids"] == ["mid-orphan"]
     cx = dbmod.connect()
     try:
         got = {r[0]: r[1] for r in cx.execute("SELECT id,status FROM jobs WHERE id LIKE 'rec-%'").fetchall()}
     finally:
         cx.close()
-    assert got == {"rec-prep": "queued", "rec-run": "queued",
+    assert got == {"rec-prep": "failed", "rec-run": "queued",
                    "rec-run-mid": "queued", "rec-canc": "cancelled"}
 
 @pytest.mark.asyncio
@@ -660,3 +666,33 @@ def test_video_modes_validation(client):
     r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "x",
                                           "video_mode": "nope", "asset_ids": [aid]})
     assert r.status_code == 422
+
+
+def test_limit_negative_rejected(client):
+    assert client.get("/api/v1/jobs", params={"limit": -1}).status_code == 422
+
+
+def test_migrate_legacy_db(client, tmp_path, monkeypatch):
+    import sqlite3
+    import app.db as dbmod
+    p = tmp_path / "legacy.db"
+    c = sqlite3.connect(p)
+    c.executescript(
+        "CREATE TABLE jobs(id TEXT PRIMARY KEY, task_type TEXT, status TEXT, engine TEXT,"
+        " model TEXT, prompt TEXT, params TEXT, comfy_prompt_id TEXT, progress REAL,"
+        " error TEXT, outputs TEXT, created_at REAL, updated_at REAL);"
+        "CREATE TABLE assets(id TEXT PRIMARY KEY, kind TEXT, rel_path TEXT, width INTEGER,"
+        " height INTEGER, created_at REAL);")
+    c.commit()
+    c.close()
+    monkeypatch.setattr(dbmod, "DB_PATH", p)
+    dbmod._init_done_for.clear()
+    cx = dbmod.connect()
+    try:
+        jcols = {r[1] for r in cx.execute("PRAGMA table_info(jobs)")}
+        acols = {r[1] for r in cx.execute("PRAGMA table_info(assets)")}
+    finally:
+        cx.close()
+    assert {"idempotency_key", "phase"} <= jcols
+    assert {"duration", "job_id"} <= acols
+

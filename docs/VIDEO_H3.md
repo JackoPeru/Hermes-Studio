@@ -11,19 +11,22 @@ Tutto sotto è rilevato via SSH read-only su `hermes`, non ipotizzato.
 
 ## Pesi e template
 - `/opt/hermes/models/minimax-h3/`: FL2VA + Ref2VA int8, turbo 4-step, VAE fp16/int8, audio VAE, qwen3vl-32b per H3. Presenti.
-- Template API: `h3/i2v-turbo.json` (preset `journey_video_preview`, 16:9),
-  `h3/i2v-turbo-916-chained.json` (preset chained, 9:16). Entrambi abilitati nel manager.
-- `h3/t2v.json` esiste ma **nessun preset lo usa** → text-to-video non offerto.
+- Template API attivi usati dallo Studio:
+  `h3/i2v-turbo.json` (`journey_video_preview`, i2v 1 frame),
+  `h3/i2v-turbo-916-chained.json` (`journey_video_preview_chained`, primo/ultimo frame),
+  `h3/i2v-turbo-ref2va.json` (`journey_video_preview_ref2va`, 1-4 reference),
+  `h3/t2v-turbo.json` (`journey_video_t2v`, derivato da i2v turbo senza frame, verificato con render),
+  `h3/ref2va-reframe-916.json` (`journey_video_reframe916`, video input → 9:16 con audio, verificato).
 - Preset full-steps (`journey_video_quality/first_last/reference`) marcati
   `DISABLED_FULLSTEPS_OOM` upstream → mai usati dallo Studio.
 
 ## Flusso implementato (image-to-video)
 1. App: start frame dalla libreria + movement prompt + formato (16:9/9:16 in 720p o 480p, nient'altro).
-2. Backend: `POST /jobs {taskType: video, asset_ids: [start], width, height}` → preset per orientamento (il manager allinea ai multipli di 32 e al cap video).
+2. Backend: `POST /jobs {taskType: video, video_mode, asset_ids?, input_video_asset_id?, width, height}` → preset per modalità (il manager allinea ai multipli di 32 e al cap video).
 3. Worker: risolve lo start frame su disco → `POST manager /jobs/video
    {preset, parameters: {prompt, input_images: [abs], width, height, seed}}`
    (ruolo app, `app.key` — niente bypass del manager).
-4. Poll manager `GET /jobs/{mid}` ogni 10s (max 90min); cancel → `POST .../cancel`.
+4. Poll manager `GET /jobs/{mid}` ogni 5s (max 90min); cancel → `POST .../cancel`.
 5. Done: copia il derivato `.h264.mp4` (generato dal manager) o converte con ffmpeg,
    `ffprobe` per durata/risoluzione, thumbnail a 0.5s, asset `kind=video` + `duration`.
 

@@ -47,6 +47,19 @@ class MainActivity : ComponentActivity() {
                     launch(Dispatchers.IO) { runCatching { updater.checkForUpdates() } }
                     updater.ensureBackgroundChecksConfigured()
                 }
+                // Rientro in app: il badge "Server connesso" non deve restare verde a caso.
+                val lc = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+                DisposableEffect(lc) {
+                    val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                        if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                            scope.launch(Dispatchers.IO) {
+                                online = try { repo.api().capabilities(); true } catch (_: Exception) { false }
+                            }
+                        }
+                    }
+                    lc.addObserver(obs)
+                    onDispose { lc.removeObserver(obs) }
+                }
                 Scaffold(
                     topBar = {
                         var label by remember { mutableStateOf("") }

@@ -32,15 +32,18 @@ come HermesHub che legge le release dalla propria repo. Niente seconda repo
 
 ## Pubblicare un update
 
-1. Lancia `Build And Publish Release APK` (workflow_dispatch): compila il debug
-   firmato stabile con `versionCode = 10 + run_number`, crea la GitHub release
-   **nella stessa repo** e aggiorna `updates/latest.json` con `signature: ""`.
+1. Lancia `Build And Publish Release APK` da `main` (workflow_dispatch): compila
+   il debug firmato stabile con `versionCode = 10 + run_number`, crea la GitHub
+   release **nella stessa repo** e aggiorna `updates/latest.json` con `signature: ""`.
+   Il job fallisce se i secret/keystore mancano (mai debug-key silenziosa).
 2. Firma in locale:
    `printf 'hermes-studio-update-v1\n%s\n%s\n%s\n%s\n%s' CODE NAME URL SIZE SHA | openssl dgst -sha256 -sign hermes-studio-update-sign.key | base64 -w0`
    usando i valori stampati dal workflow (`MANIFEST-DA-FIRMARE`).
    Note: `base64 -w0` è GNU (su macOS usare `openssl base64 -A`); lo SHA nel
    manifest va in minuscolo (il signer normalizza con `lowercase()`).
-   Verifica con `scripts/verify-feed.sh` prima del push.
+   Verifica **obbligatoria** con l'APK scaricato:
+   `bash scripts/verify-feed.sh updates/latest.json HermesStudio-XX.apk`
+   (chiave pinnata in `scripts/feed-pub.pem`, fingerprint `91e247fd…`).
 3. Compila `signature` in `updates/latest.json`, commit + push.
 4. Test: Impostazioni → Controlla ora → Scarica → Installa.
 

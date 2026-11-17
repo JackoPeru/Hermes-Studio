@@ -94,7 +94,7 @@ fun HermesTheme(content: @Composable () -> Unit) {
 
 @Composable
 fun HermesTopBar(online: Boolean, label: String, onClick: () -> Unit) {
-    Surface(color = Bg) {
+    Surface(color = Bg, modifier = Modifier.statusBarsPadding()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -260,7 +260,7 @@ fun LiveJobsCard(
                     Text(j.prompt.take(90), color = Muted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     if (active) {
                         // executing/saving: il manager non riporta i passi → barra indeterminata onesta.
-                        if (j.phase == "executing" || j.phase == "saving") {
+                        if (j.phase == "executing" || j.phase == "saving" || j.progress == null) {
                             LinearProgressIndicator(
                                 modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
                                 color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
@@ -372,61 +372,59 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
     }
     suspend fun reuse(a: Asset, go: (String) -> Unit) {
         val p = try { a.job_id?.let { repo.api().job(it).prompt } } catch (_: Exception) { null }
-        go(if (p.isNullOrBlank()) "create" else "create?tab=image&prompt=" + Uri.encode(p))
+        val tab = if (a.kind == "video") "video" else "image"
+        go(if (p.isNullOrBlank()) "create?tab=$tab" else "create?tab=$tab&prompt=" + Uri.encode(p))
     }
     var live by remember { mutableStateOf(false) }
-    var lastEventAt by remember { mutableStateOf(0L) }
+    var lastRefreshAt by remember { mutableStateOf(0L) }
     var esRef by remember { mutableStateOf<okhttp3.sse.EventSource?>(null) }
-    fun markEvent() { lastEventAt = System.currentTimeMillis() }
     LaunchedEffect(Unit) { refresh() }
-    // SSE live dal server: aggiornamento istantaneo senza polling (perf + batteria).
-    // Watchdog: se il proxy mette in buffer e non arriva nulla per 45s, si torna al poll.
+    // SSE live con riconnessione: i commenti ": ping" del server non arrivano
+    // a onEvent, quindi un watchdog sul silenzio ucciderebbe una connessione sana.
     DisposableEffect(Unit) {
+        var cancelled = false
         val task = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                esRef = repo.watchEvents(object : okhttp3.sse.EventSourceListener() {
-                    override fun onOpen(e: okhttp3.sse.EventSource, response: okhttp3.Response) {
-                        scope.launch { live = true; markEvent() }
-                    }
-                    override fun onEvent(e: okhttp3.sse.EventSource, id: String?, type: String?, data: String) {
-                        scope.launch {
-                            markEvent()
-                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { refreshLight() }
+            while (!cancelled) {
+                try {
+                    val es = repo.watchEvents(object : okhttp3.sse.EventSourceListener() {
+                        override fun onOpen(e: okhttp3.sse.EventSource, response: okhttp3.Response) {
+                            scope.launch { live = true }
                         }
-                    }
-                    override fun onFailure(e: okhttp3.sse.EventSource, t: Throwable?, r: okhttp3.Response?) {
-                        scope.launch { live = false }
-                    }
-                })
-            } catch (_: Exception) { scope.launch { live = false } }
+                        override fun onEvent(e: okhttp3.sse.EventSource, id: String?, type: String?, data: String) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastRefreshAt < 2500) return
+                            lastRefreshAt = now
+                            scope.launch {
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { refreshLight() }
+                            }
+                        }
+                        override fun onFailure(e: okhttp3.sse.EventSource, t: Throwable?, r: okhttp3.Response?) {
+                            scope.launch { live = false }
+                            if (esRef === e) esRef = null
+                        }
+                    })
+                    esRef = es
+                    // Attende la chiusura (onFailure azzera esRef), poi riconnette.
+                    while (!cancelled && esRef === es) kotlinx.coroutines.delay(1000)
+                } catch (_: Exception) {
+                    scope.launch { live = false }
+                }
+                if (!cancelled) kotlinx.coroutines.delay(5000)
+            }
         }
-        onDispose { task.cancel(); try { esRef?.cancel() } catch (_: Exception) {}; esRef = null }
+        onDispose {
+            cancelled = true
+            task.cancel()
+            try { esRef?.cancel() } catch (_: Exception) {}
+            esRef = null
+        }
     }
+    // Rete di sicurezza: poll leggero ogni 30s (SSE assente o in pausa).
     LaunchedEffect(Unit) {
         while (true) {
-            ensureActive() // il cancel deve uscire dal loop, non restare appeso
-            kotlinx.coroutines.delay(10000)
-            if (live && System.currentTimeMillis() - lastEventAt > 45000) {
-                try { esRef?.cancel() } catch (_: Exception) {}
-                esRef = null
-                live = false
-            }
-        }
-    }
-    // Fallback se SSE non disponibile + rete di sicurezza ogni 30s comunque.
-    LaunchedEffect(live) {
-        if (!live) {
-            while (true) {
-                ensureActive()
-                kotlinx.coroutines.delay(15000)
-                refreshLight()
-            }
-        } else {
-            while (true) {
-                ensureActive()
-                kotlinx.coroutines.delay(30000)
-                refreshLight()
-            }
+            ensureActive()
+            kotlinx.coroutines.delay(30000)
+            refreshLight()
         }
     }
     LazyColumn(
@@ -539,7 +537,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
                                 }
                                 Text("${j.engine} · ${j.model}", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    val busyNoSteps = j.phase == "executing" || j.phase == "saving"
+                                    val busyNoSteps = j.phase == "executing" || j.phase == "saving" || j.progress == null
                                     if (busyNoSteps) {
                                         LinearProgressIndicator(
                                             modifier = Modifier.weight(1f).height(6.dp).clip(CircleShape),
@@ -636,7 +634,7 @@ fun CreateScreen(
         if (tab == 0) {
             CreateImageScreen(repo, initialPrompt = initialPrompt, showHeader = false, onOpenAsset = onOpenAsset)
         } else {
-            CreateVideoScreen(repo, onOpenAsset = onOpenAsset, showHeader = false)
+            CreateVideoScreen(repo, onOpenAsset = onOpenAsset, initialPrompt = initialPrompt, showHeader = false)
         }
     }
 }
@@ -655,13 +653,14 @@ fun CreateImageScreen(
     onOpenAsset: (String) -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
-    var prompt by remember(initialPrompt) { mutableStateOf(initialPrompt ?: "") }
+    var prompt by rememberSaveable(initialPrompt) { mutableStateOf(initialPrompt ?: "") }
     // Stile facoltativo: null = nessuno (prompt puro). Tocca per attivare, ritocca per togliere.
-    var preset by remember { mutableStateOf<String?>(null) }
-    var format by remember { mutableStateOf("1:1") }
-    var resolution by remember { mutableStateOf("") }
-    var count by remember { mutableStateOf(1) }
+    var preset by rememberSaveable { mutableStateOf("") }
+    var format by rememberSaveable { mutableStateOf("1:1") }
+    var resolution by rememberSaveable { mutableStateOf("") }
+    var count by rememberSaveable { mutableStateOf(1) }
     var state by remember { mutableStateOf("Pronto") }
+    var submitting by remember { mutableStateOf(false) }
     // Fino a 10 riferimenti: il nodo Qwen 2.1 accetta image_1..image_16,
     // template e manager ora ne collegano 10 (oltre: serve più VRAM).
     val maxRefs = 10
@@ -805,7 +804,7 @@ fun CreateImageScreen(
             Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, AccentV.copy(alpha = 0.35f))) {
                 Column(Modifier.padding(6.dp)) {
                     OutlinedTextField(
-                        value = prompt, onValueChange = { prompt = it }, minLines = 3,
+                        value = prompt, onValueChange = { if (it.length <= 4000) prompt = it }, minLines = 3,
                         placeholder = { Text("Descrivi l'immagine che vuoi creare…") },
                         modifier = Modifier.fillMaxWidth(),
                         trailingIcon = {
@@ -831,7 +830,7 @@ fun CreateImageScreen(
                     Surface(
                         shape = RoundedCornerShape(16.dp), color = Card,
                         border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
-                        onClick = { preset = if (sel) null else s.key }
+                        onClick = { preset = if (sel) "" else s.key }
                     ) {
                         Box(Modifier.size(104.dp, 118.dp)) {
                             Box(Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFF2A1B4E), Color(0xFF141428)))))
@@ -940,25 +939,30 @@ fun CreateImageScreen(
         }
         item {
             val isEdit = refIds.isNotEmpty()
-            GradientButton(if (isEdit) "Ritocca immagine" else "Genera immagine", Icons.Filled.AutoAwesome, enabled = prompt.isNotBlank(), onClick = {
+            GradientButton(if (isEdit) "Ritocca immagine" else "Genera immagine", Icons.Filled.AutoAwesome, enabled = prompt.isNotBlank() && !submitting, onClick = {
+                if (submitting) return@GradientButton
                 val opts = resOptions(format)
-                val sel = opts.firstOrNull { it.first == resolution } ?: opts.first()
+                val sel = opts.firstOrNull { it.first == resolution } ?: opts.getOrNull(1) ?: opts.first()
                 val steps = fixedSteps
                 val refs = refIds.toList()
                 state = "Accodamento…"
+                submitting = true
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         val api = repo.api()
-                        val created = mutableListOf<Job>()
+                        tracked = emptyList(); liveJobs = emptyList()
                         repeat(count) {
-                            created += api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, null, preset, refs, "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
+                            val j = api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, null, preset.takeIf { it.isNotBlank() }, refs, "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
+                            // Aggiorna subito: se il batch si interrompe, i job
+                            // già accettati restano visibili e tracciati.
+                            tracked = tracked + j.id
+                            liveJobs = liveJobs + j
                         }
-                        tracked = created.map { it.id }
-                        liveJobs = created
                         state = (if (isEdit) "Ritocco" else "Generazione") + " avviata (${sel.second}×${sel.third}, $steps passi): segui qui sotto."
                         refreshRecent()
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
+                    finally { submitting = false }
                 }
             })
             Spacer(Modifier.height(4.dp))
@@ -1103,8 +1107,13 @@ fun ReferencePickerSheet(
         } catch (_: Exception) {}
     }
     suspend fun load(p: String) {
-        err = null
-        try { browse = repo.api().library(p) } catch (e: Exception) { err = "Server: ${e.message}" }
+        try {
+            browse = repo.api().library(p)
+            path = p
+            err = null
+        } catch (e: Exception) {
+            err = "Server: ${e.message}"
+        }
     }
     LaunchedEffect(tab) { if (tab == 1) load(path) }
     val crumbs = remember(path) {
@@ -1178,14 +1187,14 @@ fun ReferencePickerSheet(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     if (path.isNotEmpty()) {
                         IconButton(
-                            onClick = { val p = browse?.parent ?: ""; path = p; scope.launch { load(p) } },
+                            onClick = { val p = browse?.parent ?: ""; scope.launch { load(p) } },
                             modifier = Modifier.size(30.dp)
                         ) {
                             Icon(Icons.Filled.ArrowBack, "Cartella superiore", tint = Muted, modifier = Modifier.size(18.dp))
                         }
                     }
                     TextButton(
-                        onClick = { path = ""; scope.launch { load("") } },
+                        onClick = { scope.launch { load("") } },
                         contentPadding = PaddingValues(horizontal = 4.dp)
                     ) {
                         Text(
@@ -1196,7 +1205,7 @@ fun ReferencePickerSheet(
                     crumbs.forEach { (name, target) ->
                         Text("/", color = Muted, fontSize = 13.sp)
                         TextButton(
-                            onClick = { path = target; scope.launch { load(target) } },
+                            onClick = { scope.launch { load(target) } },
                             contentPadding = PaddingValues(horizontal = 4.dp)
                         ) {
                             Text(
@@ -1213,7 +1222,7 @@ fun ReferencePickerSheet(
                             Surface(
                                 shape = RoundedCornerShape(12.dp), color = Card,
                                 border = BorderStroke(1.dp, CardBorder),
-                                onClick = { path = d.path; scope.launch { load(d.path) } }
+                                onClick = { scope.launch { load(d.path) } }
                             ) {
                                 Row(
                                     Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -1323,15 +1332,21 @@ fun DropDownField(label: String, value: String, options: List<String>, onSelect:
 // ---------- Crea video (mockup 03, image-to-video H3 turbo) ----------
 
 @Composable
-fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (() -> Unit)? = null, showHeader: Boolean = true) {
+fun CreateVideoScreen(
+    repo: StudioRepo,
+    onOpenAsset: (String) -> Unit,
+    initialPrompt: String? = null,
+    onDone: (() -> Unit)? = null,
+    showHeader: Boolean = true
+) {
     val scope = rememberCoroutineScope()
     var recentVideos by remember { mutableStateOf(repo.memAssets?.filter { it.kind == "video" }?.take(6) ?: emptyList()) }
     var videoUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
-    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    var selectedIds by remember { mutableStateOf(listOf<String>()) }
     // Sorgenti start frame: telefono o libreria Hub (stesso picker delle immagini).
     var pickerOpen by remember { mutableStateOf(false) }
     var refUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
-    var prompt by remember { mutableStateOf("") }
+    var prompt by rememberSaveable(initialPrompt) { mutableStateOf(initialPrompt ?: "") }
     // Solo 720p/480p: le uniche risoluzioni offerte per H3 (il manager allinea ai multipli di 32).
     val videoFormats = mapOf(
         "16:9 · 720p" to (1280 to 720),
@@ -1339,10 +1354,10 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         "9:16 · 720p" to (720 to 1280),
         "9:16 · 480p" to (480 to 854)
     )
-    var format by remember { mutableStateOf("16:9 · 720p") }
+    var format by rememberSaveable { mutableStateOf("16:9 · 720p") }
     // Modalità workflow H3 (verificate con render reali): ognuna ha preset e
     // requisiti propri. Default i2v, il caso più comune.
-    var mode by remember { mutableStateOf("i2v") }
+    var mode by rememberSaveable { mutableStateOf("i2v") }
     var inputVideoId by remember { mutableStateOf<String?>(null) }
     fun limitRefs(): Int = when (mode) {
         "i2v" -> 1
@@ -1352,11 +1367,12 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
     }
     // Al cambio modalità pota le selezioni in eccesso e libera il video.
     LaunchedEffect(mode) {
-        selectedIds = selectedIds.take(limitRefs()).toSet()
+        selectedIds = selectedIds.take(limitRefs()).toList()
         if (mode != "v2v") inputVideoId = null
     }
-    var duration by remember { mutableStateOf("5 s") }
+    var duration by rememberSaveable { mutableStateOf("5 s") }
     var state by remember { mutableStateOf("Pronto") }
+    var submitting by remember { mutableStateOf(false) }
     var capsVideo by remember { mutableStateOf<com.hermes.studio.CapTask?>(null) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
     // Job lanciato da qui: seguito in schermata, risultato visibile subito.
@@ -1366,10 +1382,15 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
     var resultUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     LaunchedEffect(tracked) {
         if (tracked.isEmpty()) return@LaunchedEffect
+        var misses = 0
         while (true) {
             val js = tracked.mapNotNull { id -> runCatching { repo.api().job(id) }.getOrNull() }
             if (js.isNotEmpty()) liveJobs = js
+            misses = if (js.size < tracked.size) misses + 1 else 0
             if (js.size == tracked.size && js.all { it.status in setOf("completed", "failed", "cancelled") }) break
+            // Job sparito dal server (prune) o rete giù: smetti, la verità
+            // resta sul server e si rilegge riaprendo la schermata.
+            if (misses >= 6) break
             kotlinx.coroutines.delay(2000)
         }
     }
@@ -1439,7 +1460,9 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             try {
                 val up = repo.uploadImage(uri)
                 val id = up.asset_id.ifBlank { null } ?: up.asset_upload_id
-                if (selectedIds.size >= limitRefs() && !selectedIds.contains(id)) {
+                if (limitRefs() == 0) {
+                    state = "Questa modalità non usa immagini."
+                } else if (selectedIds.size >= limitRefs() && !selectedIds.contains(id)) {
                     state = "Max ${limitRefs()} start frame: deselezionane uno prima."
                 } else {
                     selectedIds = selectedIds + id
@@ -1576,8 +1599,10 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
                     }
                     if (selectedIds.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
+                        val refList = selectedIds
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(selectedIds.toList(), key = { it }) { id ->
+                            items(refList.size, key = { refList[it] }) { i ->
+                                val id = refList[i]
                                 val req = rememberImgReq(refUrls[id], loader)
                                 Box(Modifier.size(104.dp, 118.dp).clip(RoundedCornerShape(12.dp)).background(Bg)) {
                                     if (req != null && loader != null) {
@@ -1585,6 +1610,15 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
                                             model = req, imageLoader = loader!!, contentDescription = id,
                                             modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                                         )
+                                    }
+                                    if (mode == "first_last") {
+                                        Surface(shape = RoundedCornerShape(8.dp), color = Color.Black.copy(alpha = 0.65f), modifier = Modifier.align(Alignment.BottomStart).padding(4.dp)) {
+                                            Text(
+                                                if (i == 0) "Primo" else "Ultimo",
+                                                color = Color.White, fontSize = 11.sp,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
                                     }
                                     Surface(
                                         shape = CircleShape, color = Color.Black.copy(alpha = 0.6f),
@@ -1594,6 +1628,11 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
                                         Icon(Icons.Filled.Close, null, tint = Color.White, modifier = Modifier.padding(3.dp).size(13.dp))
                                     }
                                 }
+                            }
+                        }
+                        if (mode == "first_last" && selectedIds.size == 2) {
+                            TextButton(onClick = { selectedIds = selectedIds.reversed() }, contentPadding = PaddingValues(0.dp)) {
+                                Text("Inverti primo/ultimo", color = AccentV, fontSize = 13.sp)
                             }
                         }
                     }
@@ -1680,8 +1719,10 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
                 "v2v" -> inputVideoId != null
                 else -> true
             }
-            GradientButton("Avvia rendering", Icons.Filled.PlayArrow, enabled = ready, onClick = {
+            GradientButton("Avvia rendering", Icons.Filled.PlayArrow, enabled = ready && !submitting, onClick = {
+                if (submitting) return@GradientButton
                 state = "Accodamento…"
+                submitting = true
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         val created = repo.api().createJob(
@@ -1698,6 +1739,7 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
                         state = "Rendering avviato (${durSecs.toInt()} s): segui qui sotto."
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
+                    finally { submitting = false }
                 }
             })
             Spacer(Modifier.height(4.dp))
@@ -1753,7 +1795,7 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         ReferencePickerSheet(
             repo = repo,
             loader = loader,
-            selectedIds = selectedIds,
+            selectedIds = selectedIds.toSet(),
             maxRefs = limitRefs(),
             onToggle = { asset, url ->
                 selectedIds = if (selectedIds.contains(asset.id)) {
@@ -1799,8 +1841,11 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
     }
     // Serializza i toggle: tap rapidi non devono perdersi/ribaltarsi.
     val favMutex = remember { Mutex() }
+    // Richieste concorrenti: vince solo l'ultima partita (niente griglia stantia).
+    var reloadSeq by remember { mutableStateOf(0) }
 
     suspend fun reload() {
+        val my = ++reloadSeq
         try {
             // Un solo giro di rete: lista intera + preferiti + progetti in parallelo.
             val api = repo.api()
@@ -1817,6 +1862,7 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
                 try { api.projects() } catch (_: Exception) { emptyList() }
             }
             val all = allD.await()
+            if (my != reloadSeq) return
             if (all != assets) { assets = all; repo.memAssets = all }
             favIds = favD.await()
             projects = prjD.await()
@@ -1851,7 +1897,8 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
             val p = try { a.job_id?.let { repo.api().job(it).prompt } } catch (_: Exception) { null }
             // NavController vive sul Main: il salto di thread è obbligatorio.
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                onReuse(if (p.isNullOrBlank()) "create" else "create?tab=image&prompt=" + Uri.encode(p))
+                val tab = if (a.kind == "video") "video" else "image"
+                onReuse(if (p.isNullOrBlank()) "create?tab=$tab" else "create?tab=$tab&prompt=" + Uri.encode(p))
             }
         }
     }
@@ -2143,6 +2190,16 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
                     GradientButton("Salva e testa", Icons.Filled.Check, onClick = {
                         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                             try {
+                                val b = base.trim()
+                                if (b.startsWith("http://")) {
+                                    val host = runCatching { java.net.URI(b).host?.lowercase() }.getOrNull()
+                                    val allowed = host == "localhost" || host == "127.0.0.1" ||
+                                        (host?.endsWith("tail85940c.ts.net") == true)
+                                    if (!allowed) {
+                                        msg = "HTTP in chiaro consentito solo per localhost o *.tail85940c.ts.net. Usa https:// o il nome tailnet."
+                                        return@launch
+                                    }
+                                }
                                 repo.save(base, tok)
                                 repo.testConnection()
                                 refreshSystem()
@@ -2311,6 +2368,21 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
     var imgUrl by remember { mutableStateOf<String?>(null) }
     val req = rememberImgReq(imgUrl, loader)
 
+    fun saveGallery(a: Asset) {
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                repo.saveToGallery(a)
+                msg = "Salvato in galleria."
+            } catch (e: Exception) { msg = "Download fallito: ${e.message}" }
+        }
+    }
+    // API 26-28: MediaStore richiede WRITE_EXTERNAL_STORAGE a runtime.
+    val galleryPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val a = asset
+        if (granted && a != null) saveGallery(a)
+        else if (!granted) msg = "Permesso archivio negato: impossibile salvare in Galleria."
+    }
+
     suspend fun load() {
         try {
             val a = repo.api().asset(assetId)
@@ -2381,11 +2453,14 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Box(Modifier.weight(1f)) {
                             GradientButton("Scarica", Icons.Filled.Download, onClick = {
-                                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                    try {
-                                        repo.saveToGallery(a)
-                                        msg = "Salvato in galleria."
-                                    } catch (e: Exception) { msg = "Download fallito: ${e.message}" }
+                                if (android.os.Build.VERSION.SDK_INT < 29 &&
+                                    androidx.core.content.ContextCompat.checkSelfPermission(
+                                        ctx, android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                    ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    galleryPerm.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                } else {
+                                    saveGallery(a)
                                 }
                             })
                         }
@@ -2421,12 +2496,13 @@ fun AssetDetailScreen(repo: StudioRepo, assetId: String, onReusePrompt: (String)
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        // Riusa prompt solo per immagini (per i video il prompt è movimento, non soggetto).
-                        if (a.job_id != null && a.kind != "video") {
+                        // Il prompt torna nel tab giusto: soggetto per immagini, movimento per video.
+                        if (a.job_id != null) {
                             Box(Modifier.weight(1f)) {
                                 GradientButton("Riusa prompt", Icons.Filled.ContentCopy, onClick = {
                                     val p = jobPrompt
-                                    onReusePrompt(if (p.isNullOrBlank()) "create" else "create?tab=image&prompt=" + Uri.encode(p))
+                                    val tab = if (a.kind == "video") "video" else "image"
+                                    onReusePrompt(if (p.isNullOrBlank()) "create?tab=$tab" else "create?tab=$tab&prompt=" + Uri.encode(p))
                                 })
                             }
                         }
@@ -2517,7 +2593,14 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
             outUrls = found.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
         } catch (e: Exception) { msg = "Errore: ${e.message}" }
     }
-    LaunchedEffect(jobId) { scope.launch(kotlinx.coroutines.Dispatchers.IO) { load() } }
+    LaunchedEffect(jobId) {
+        while (true) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { load() }
+            val st = job?.status
+            if (st !in setOf("queued", "preparing", "running", "cancelling")) break
+            kotlinx.coroutines.delay(2000)
+        }
+    }
 
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 16.dp).imePadding(),
@@ -2543,11 +2626,19 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
                             },
                             color = Muted, fontSize = 13.sp
                         )
-                        LinearProgressIndicator(
-                            progress = { ((j.progress ?: 0.0).toFloat()).coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
-                            color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
-                        )
+                        if (j.phase == "executing" || j.phase == "saving" || j.progress == null) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                                color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
+                            )
+                            Text(phaseLabel(j), color = Muted, fontSize = 12.sp)
+                        } else {
+                            LinearProgressIndicator(
+                                progress = { ((j.progress ?: 0.0).toFloat()).coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                                color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
+                            )
+                        }
                         if (!j.error.isNullOrBlank()) Text(j.error!!.take(300), color = Warn, fontSize = 13.sp)
                         if (msg.isNotBlank()) Text(msg, color = Warn, fontSize = 13.sp)
                     }
@@ -2557,7 +2648,9 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
                 item {
                     GradientButton("Annulla job", Icons.Filled.Close, onClick = {
                         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                            try { job = repo.api().cancel(j.id) } catch (e: Exception) { msg = "Errore: ${e.message}" }
+                            try {
+                                job = repo.api().cancel(j.id)
+                            } catch (e: Exception) { msg = "Errore: ${e.message}" }
                         }
                     })
                 }
@@ -2660,8 +2753,14 @@ fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier
     var posMs by remember { mutableStateOf(0L) }
     var durMs by remember { mutableStateOf(0L) }
     var ready by remember { mutableStateOf(false) }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     DisposableEffect(asset.id) {
         var p: androidx.media3.exoplayer.ExoPlayer? = null
+        // Pausa quando l'app va in background: niente audio fantasma.
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP) p?.pause()
+        }
+        lifecycle.addObserver(obs)
         val job = scope.launch {
             try {
                 val url = repo.assetUrl(asset, false) ?: repo.assetUrl(asset, true)
@@ -2682,6 +2781,9 @@ fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier
                                 durMs = exo.duration.coerceAtLeast(0L)
                             }
                         }
+                        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                            onError("Riproduzione fallita: ${error.errorCodeName}")
+                        }
                     })
                     exo.setMediaSource(source)
                     exo.prepare()
@@ -2695,6 +2797,7 @@ fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier
         }
         onDispose {
             job.cancel()
+            lifecycle.removeObserver(obs)
             try { p?.release() } catch (_: Exception) {}
             if (player === p) player = null
         }
