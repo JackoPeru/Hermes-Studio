@@ -656,7 +656,7 @@ def test_video_modes_validation(client):
     # v2v: richiede un video, non immagini
     r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "x", "video_mode": "v2v"})
     assert r.status_code == 422
-    # modalità sconosciuta
+    # modalita sconosciuta
     r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "x",
                                           "video_mode": "nope", "asset_ids": [aid]})
     assert r.status_code == 422
