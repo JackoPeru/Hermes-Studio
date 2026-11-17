@@ -50,6 +50,7 @@ def _job_row_to_out(r) -> JobOut:
         width=params.get("width"), height=params.get("height"),
         steps=params.get("steps"), seed=params.get("seed"),
         duration=params.get("duration"), asset_ids=params.get("asset_ids") or [],
+        video_mode=params.get("video_mode"),
         comfy_prompt_id=r["comfy_prompt_id"], progress=r["progress"],
         phase=r["phase"] if "phase" in r.keys() else None,
         error=r["error"], outputs=json.loads(r["outputs"] or "[]"),
@@ -179,6 +180,38 @@ async def _stage_manager_input(job_id: str, asset_id: str, tag: str = "") -> str
     except OSError:
         pass
     stage = stage_dir / f"hs_{job_id}_in{tag}{cand.suffix.lower() or '.png'}"
+    try:
+        await asyncio.to_thread(_sh.copy2, str(cand.resolve()), stage)
+    except OSError:
+        return None
+    return str(stage)
+
+
+async def _stage_manager_video(job_id: str, asset_id: str) -> str | None:
+    """Copia un video della libreria nella staging fidata del manager.
+
+    Gli asset Studio vivono in /var/lib/hermes-studio (fuori dalle root fidate
+    del manager): senza staging il submit viene rifiutato. Ritorna il path o
+    None; il chiamante cancella dopo il submit.
+    """
+    from pathlib import Path as _P
+    import shutil as _sh
+    cx = db.connect()
+    try:
+        rr = cx.execute("SELECT rel_path, kind FROM assets WHERE id=?", (asset_id,)).fetchone()
+    finally:
+        cx.close()
+    if not rr or rr["kind"] != "video":
+        return None
+    cand = ASSETS_DIR / safe_name(rr["rel_path"])
+    if not cand.is_file() or cand.is_symlink() or cand.suffix.lower() not in (".mp4", ".webm", ".mkv", ".mov", ".m4v"):
+        return None
+    stage_dir = _P.home() / ".hermes" / "hermes-studio-in"
+    try:
+        stage_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    stage = stage_dir / f"hs_{job_id}_refvideo{cand.suffix.lower()}"
     try:
         await asyncio.to_thread(_sh.copy2, str(cand.resolve()), stage)
     except OSError:
@@ -445,13 +478,14 @@ async def _run_one_video(job_id: str) -> None:
         mgr = _manager()
         mid = existing_mid
         if not mid:
+            mode = params.get("video_mode") or "i2v"
             aids = (params.get("asset_ids") or [])[:4]
             staged: list[str] = []
             for i, aid_in in enumerate(aids):
                 p = await _stage_manager_input(job_id, aid_in, str(i + 1))
                 if p:
                     staged.append(p)
-            if not staged:
+            if mode != "t2v" and mode != "v2v" and not staged:
                 cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
                            ("immagine di partenza non trovata in libreria", db.now(), job_id))
                 cx.commit()
@@ -464,6 +498,16 @@ async def _run_one_video(job_id: str) -> None:
                 "height": int(params.get("height") or 768),
                 "seed": int(params.get("seed") if params.get("seed") is not None else random.randint(0, 2**31 - 1)),
             }
+            staged_video: str | None = None
+            if mode == "v2v":
+                vid = params.get("input_video_asset_id")
+                staged_video = await _stage_manager_video(job_id, vid or "")
+                if not staged_video:
+                    cx.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                               ("video di partenza non trovato in libreria", db.now(), job_id))
+                    cx.commit()
+                    return
+                mparams["input_video"] = staged_video
             # Durata solo se richiesta (default manager: ~5s @24fps); il manager
             # calcola i frame dalla durata, clamp 22..3600.
             try:
@@ -485,6 +529,7 @@ async def _run_one_video(job_id: str) -> None:
             finally:
                 for _s in staged:
                     _unstage(_s)
+                _unstage(staged_video)
             # Flip condizionale: se nel frattempo è arrivato un cancel, non
             # sovrascrivere 'cancelling' — cancella il job manager e chiudi.
             cur = cx.execute(
@@ -712,14 +757,13 @@ async def capabilities(_: None = Depends(require_auth)):
                            supports_reference=True, max_refs=10),
         ],
         video=[
-            CapabilityTask(task="text-to-video", engine="comfyui", model="minimax-h3",
-                           enabled=False,
-                           disabled_reason="Nessun preset text-to-video nel manager (solo template grezzo h3/t2v.json, mai validato).",
-                           notes="Pesi H3 presenti ma senza preset T2V attivo lato manager."),
+            CapabilityTask(task="text-to-video", engine="comfyui", model="minimax-h3-turbo-4step",
+                           enabled=True,
+                           notes="Preset manager journey_video_t2v (turbo 4-step, template derivato da i2v validato)."),
             CapabilityTask(task="image-to-video", engine="comfyui", model="minimax-h3-turbo-4step",
                            enabled=True, max_width=1344, max_height=1344,
-                           notes="Preset manager journey_video_preview (16:9) / chained (9:16), turbo 4-step, ~5s @24fps. Richiede immagine di partenza.",
-                           supports_reference=True),
+                           notes="Modalità: i2v (1 frame), first_last (2 frame), ref2va (1-4 reference), t2v (solo testo), v2v (video→reframe 9:16).",
+                           supports_reference=True, max_refs=4),
         ],
     )
 
@@ -815,18 +859,20 @@ def _norm_wh(w: int | None, h: int | None, max_area: int = _IMAGE_AREA_CAP_PX) -
     return w, h
 
 
-VIDEO_PRESETS = {
-    "wide": ("journey_video_preview", 1344, 768),
-    "tall": ("journey_video_preview_chained", 768, 1344),
+VIDEO_MODE_PRESETS = {
+    "i2v": "journey_video_preview",           # 1 start frame
+    "first_last": "journey_video_preview_chained",  # primo + ultimo frame
+    "ref2va": "journey_video_preview_ref2va",  # 1..4 reference images
+    "t2v": "journey_video_t2v",               # solo testo
+    "v2v": "journey_video_reframe916",        # video input -> reframe 9:16
 }
 
 
-def _video_preset_for(w: int, h: int) -> str:
-    """Solo l'orientamento sceglie il preset; le dimensioni richieste passano
-    (clamp + snap in _norm_wh) così 480p/720p sono onorati davvero."""
-    if h > w:
-        return VIDEO_PRESETS["tall"][0]
-    return VIDEO_PRESETS["wide"][0]
+def _video_mode(body: "JobCreate") -> str:
+    mode = (body.video_mode or "i2v").strip().lower()
+    if mode not in VIDEO_MODE_PRESETS:
+        raise HTTPException(422, f"video_mode non valido: {mode}")
+    return mode
 
 
 @app.post("/api/v1/jobs", response_model=JobOut, status_code=201)
@@ -851,17 +897,55 @@ async def create_job(body: JobCreate, _: None = Depends(require_auth)):
     finally:
         cx.close()
     if is_video:
-        if not body.asset_ids:
-            raise HTTPException(422, "video richiede asset_ids con almeno 1 immagine di partenza")
+        mode = _video_mode(body)
+        # Requisiti per modalità: fail-fast prima di accodare.
+        if mode == "i2v":
+            if not body.asset_ids:
+                raise HTTPException(422, "immagine → video richiede 1 immagine di partenza")
+            asset_ids = body.asset_ids[:1]
+            w, h = _norm_wh(body.width or 1344, body.height or 768, _VIDEO_AREA_CAP_PX)
+        elif mode == "first_last":
+            if len(body.asset_ids) < 2:
+                raise HTTPException(422, "primo/ultimo frame richiede 2 immagini")
+            asset_ids = body.asset_ids[:2]
+            w, h = _norm_wh(body.width or 1344, body.height or 768, _VIDEO_AREA_CAP_PX)
+        elif mode == "ref2va":
+            if not 1 <= len(body.asset_ids) <= 4:
+                raise HTTPException(422, "reference → video richiede 1-4 immagini")
+            asset_ids = body.asset_ids[:4]
+            w, h = _norm_wh(body.width or 1344, body.height or 768, _VIDEO_AREA_CAP_PX)
+        elif mode == "t2v":
+            if body.asset_ids:
+                raise HTTPException(422, "solo testo non usa immagini di partenza")
+            asset_ids = []
+            w, h = _norm_wh(body.width or 1344, body.height or 768, _VIDEO_AREA_CAP_PX)
+        else:  # v2v reframe: output verticale 9:16
+            if not body.input_video_asset_id:
+                raise HTTPException(422, "video → video richiede un video di partenza")
+            if body.asset_ids:
+                raise HTTPException(422, "video → video usa input_video_asset_id, non asset_ids")
+            cx = db.connect()
+            try:
+                r = cx.execute("SELECT kind FROM assets WHERE id=?",
+                               (body.input_video_asset_id,)).fetchone()
+            finally:
+                cx.close()
+            if not r:
+                raise HTTPException(404, "video di partenza non trovato")
+            if r["kind"] != "video":
+                raise HTTPException(422, "il video di partenza deve essere un video")
+            asset_ids = []
+            w, h = 768, 1344
         model = body.model or "minimax-h3-turbo-4step"
         prompt = body.prompt.strip()
-        preset = _video_preset_for(body.width or 1344, body.height or 768)
-        w, h = _norm_wh(body.width or 1344, body.height or 768, _VIDEO_AREA_CAP_PX)
+        preset = VIDEO_MODE_PRESETS[mode]
         steps = body.steps or 4
         seed = body.seed if body.seed is not None else random.randint(0, 2**31 - 1)
         params = {"width": w, "height": h, "steps": steps, "seed": seed,
                   "negative_prompt": body.negative_prompt, "style_preset": None,
-                  "asset_ids": body.asset_ids, "video_preset": preset,
+                  "asset_ids": asset_ids, "video_preset": preset,
+                  "video_mode": mode,
+                  "input_video_asset_id": body.input_video_asset_id,
                   "duration": body.duration}
         task_type = "video"
     else:

@@ -41,7 +41,9 @@ class JobCreate(BaseModel):
     steps: int | None = Field(default=None, ge=1, le=60)
     seed: int | None = None
     duration: float | None = Field(default=None, ge=2, le=10)
-    style_preset: str | None = None  # Cinematico/Anime/Realistico/Fantasy -> prompt template only
+    video_mode: str | None = Field(default=None, max_length=32)
+    input_video_asset_id: str | None = Field(default=None, max_length=64)
+    style_preset: str | None = None  # prompt template only, optional
     asset_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = Field(default=None, max_length=128)
 
@@ -57,6 +59,7 @@ class JobOut(BaseModel):
     steps: int | None = None
     seed: int | None = None
     duration: float | None = None
+    video_mode: str | None = None
     asset_ids: list[str] = Field(default_factory=list)
     comfy_prompt_id: str | None = None
     progress: float | None = None

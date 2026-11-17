@@ -46,8 +46,8 @@ ruff check backend tests
 Apri `android/` in Android Studio (se manca il wrapper: `gradle wrapper`), imposta backend+token in Impostazioni, build `assembleDebug`. La coda sopravvive a chiusura app (stato dal server). Build con firma stabile + auto-update in-app: vedi `docs/UPDATE.md` + workflow `Build And Publish Release APK` (feed `updates/latest.json` nella stessa repo).
 
 ## Limiti onesti (V3)
-- Video = solo image-to-video H3 turbo (durate 3/5/8s): 16:9/9:16 in 720p o 480p, start frame obbligatorio dalla libreria (16:9 uno, 9:16 fino a due). Text-to-video: nessun preset nel manager (solo template grezzo mai validato) → non offerto.
-- Immagini: tier 2K / Full HD / HD / 480p per formato (max reale 2560×1440), passi fissi 20 (la qualità si sceglie con la risoluzione).
+- Video: 5 modalità H3 verificate con render reali — i2v (1 frame), first_last (2 frame), ref2va (1-4 reference), t2v (solo testo), v2v (video input → reframe 9:16 con audio). Durate 3/5/8s; 16:9/9:16 in 720p o 480p (v2v force 9:16).
+- Immagini: tier 2K / Full HD / HD / 480p per formato (max reale 2560×1440), passi fissi 20 (la qualità si sceglie con la risoluzione). Stili: 14 prompt template facoltativi (nessuno di default).
 - Edit/reference Qwen: verificato con render reali (fino a 10 riferimenti; 10 richiedono ~14 min e più VRAM, 3 ~4 min). Riferimenti da telefono o dalla libreria Hub (`~/.hermes/hub_uploads`, navigazione cartelle, import dedupe).
 - Start frame video: stessa doppia sorgente (telefono o libreria Hub) del picker immagini.
 - Niente ETA inventate: stato + step; progresso reale solo quando il manager lo riporta.

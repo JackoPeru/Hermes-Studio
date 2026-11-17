@@ -33,6 +33,11 @@ Tutto sotto è rilevato via SSH read-only su `hermes`, non ipotizzato.
 - Durate 3/5/8s via `duration` (2..10s accettati dal backend, l'app offre i tre
   tier verificati): il preset turbo scala `length` dai frame; render reale 8s
   verificato (7.86s misurati). Default ~5s se non specificata.
+- Modalità (`video_mode`) verificate con render reali: `i2v` (1 frame,
+  journey_video_preview), `first_last` (2 frame, chained turbo), `ref2va`
+  (1-4 reference, ref2va turbo), `t2v` (solo testo, preset journey_video_t2v
+  derivato dal turbo i2v), `v2v` (video input, reframe916: output 9:16 con
+  audio, ~11 min nel test).
 - Camera motion (Dolly/Pan/Loop): solo suggerimenti testuali appesi al prompt —
   il preset non ha parametri camera strutturali.
 - Lo start frame deve stare in una root fidata del manager (`~/.hermes`,

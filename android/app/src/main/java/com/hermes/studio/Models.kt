@@ -56,7 +56,9 @@ data class JobCreate(
     val duration: Double? = null,
     val style_preset: String? = null,
     val asset_ids: List<String> = emptyList(),
-    val idempotency_key: String? = null
+    val idempotency_key: String? = null,
+    val video_mode: String? = null,
+    val input_video_asset_id: String? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -72,6 +74,7 @@ data class Job(
     val steps: Int? = null,
     val seed: Long? = null,
     val duration: Double? = null,
+    val video_mode: String? = null,
     val asset_ids: List<String> = emptyList(),
     val comfy_prompt_id: String? = null,
     val progress: Double? = null,

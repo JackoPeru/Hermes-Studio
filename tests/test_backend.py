@@ -60,7 +60,7 @@ def test_capabilities_gates_video(client):
     i2v = [t for t in j["video"] if t["task"] == "image-to-video"]
     assert i2v and i2v[0]["enabled"] is True
     t2v = [t for t in j["video"] if t["task"] == "text-to-video"]
-    assert t2v and t2v[0]["enabled"] is False  # nessun preset T2V nel manager
+    assert t2v and t2v[0]["enabled"] is True  # preset journey_video_t2v verificato
 
 def test_enqueue_image_and_idempotency(client):
     body = {"taskType": "image", "prompt": "a neon alley", "width": 768, "height": 768, "idempotency_key": "k1"}
@@ -639,3 +639,24 @@ def test_library_browse_import_and_jail(client, tmp_path, monkeypatch):
     again = client.post("/api/v1/library/import", json={"path": "denudate/claudia/a.png"})
     assert again.json()["id"] == aid  # dedupe per contenuto
     assert client.get("/api/v1/library/file?path=../../etc/passwd").status_code == 400
+
+def test_video_modes_validation(client):
+    aid = _seed_asset(client)
+    # t2v: nessuna immagine necessaria
+    r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "ocean", "video_mode": "t2v"})
+    assert r.status_code == 201, r.text
+    assert r.json()["video_mode"] == "t2v"
+    # first_last: servono esattamente 2 immagini
+    r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "x",
+                                          "video_mode": "first_last", "asset_ids": [aid]})
+    assert r.status_code == 422
+    r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "x",
+                                          "video_mode": "first_last", "asset_ids": [aid, aid]})
+    assert r.status_code == 201, r.text
+    # v2v: richiede un video, non immagini
+    r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "x", "video_mode": "v2v"})
+    assert r.status_code == 422
+    # modalità sconosciuta
+    r = client.post("/api/v1/jobs", json={"taskType": "video", "prompt": "x",
+                                          "video_mode": "nope", "asset_ids": [aid]})
+    assert r.status_code == 422

@@ -574,9 +574,9 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 val img = caps?.image?.firstOrNull { it.enabled } ?: caps?.image?.firstOrNull()
-                // H3: il primo task in lista è text-to-video (senza preset, quindi
-                // "Disabilitato"), ma image-to-video è attivo. Mostra quello vero.
-                val vid = caps?.video?.firstOrNull { it.enabled } ?: caps?.video?.firstOrNull()
+                // H3: preferisci image-to-video; fallback al primo task video abilitato.
+                val vid = caps?.video?.firstOrNull { it.task == "image-to-video" && it.enabled }
+                    ?: caps?.video?.firstOrNull { it.enabled }
                 Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, AccentV.copy(alpha = 0.35f)), modifier = Modifier.weight(1f)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(CtaGradient), contentAlignment = Alignment.Center) {
@@ -594,7 +594,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
                         }
                         Text("MiniMax H3", fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            if (vid?.enabled == true) "Generazione video image-to-video (turbo)" else "Video non pronto",
+                            if (vid?.enabled == true) "5 modalità H3: i2v, first/last, ref, t2v, v2v" else "Video non pronto",
                             color = Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, minLines = 2
                         )
                         StatusPill(if (vid?.enabled == true) "Pronto" else "Disabilitato", vid?.enabled == true)
@@ -656,7 +656,8 @@ fun CreateImageScreen(
 ) {
     val scope = rememberCoroutineScope()
     var prompt by remember(initialPrompt) { mutableStateOf(initialPrompt ?: "") }
-    var preset by remember { mutableStateOf("cinematico") }
+    // Stile facoltativo: null = nessuno (prompt puro). Tocca per attivare, ritocca per togliere.
+    var preset by remember { mutableStateOf<String?>(null) }
     var format by remember { mutableStateOf("1:1") }
     var resolution by remember { mutableStateOf("") }
     var count by remember { mutableStateOf(1) }
@@ -719,9 +720,19 @@ fun CreateImageScreen(
 
     val styles = listOf(
         StylePreset("cinematico", "Cinematico", Icons.Filled.Movie),
-        StylePreset("anime", "Anime", Icons.Filled.Face),
+        StylePreset("fotografico", "Fotografico", Icons.Filled.PhotoCamera),
+        StylePreset("ritratto", "Ritratto", Icons.Filled.Face),
         StylePreset("realistico", "Realistico", Icons.Filled.CameraAlt),
-        StylePreset("fantasy", "Fantasy", Icons.Filled.AutoAwesome)
+        StylePreset("anime", "Anime", Icons.Filled.AutoAwesome),
+        StylePreset("illustrazione", "Illustrazione", Icons.Filled.Brush),
+        StylePreset("acquerello", "Acquerello", Icons.Filled.Palette),
+        StylePreset("fumetto", "Fumetto", Icons.Filled.AutoStories),
+        StylePreset("fantasy", "Fantasy", Icons.Filled.Star),
+        StylePreset("cyberpunk", "Cyberpunk", Icons.Filled.Bolt),
+        StylePreset("3d", "3D Render", Icons.Filled.ViewInAr),
+        StylePreset("noir", "Noir", Icons.Filled.Nightlight),
+        StylePreset("minimale", "Minimale", Icons.Filled.CropSquare),
+        StylePreset("vintage", "Vintage", Icons.Filled.FilterVintage)
     )
     // Tier nomi familiari, pixel esatti. Tetto immagini 2K (2560×1440) dal manager;
     // lo snap a 32px resta di sicurezza (dettaglio job mostra i reali).
@@ -808,13 +819,19 @@ fun CreateImageScreen(
             }
         }
         item {
+            Text("Stile (opzionale)", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+            Text(
+                "Nessuno selezionato = prompt puro. Tocca per attivare, ritocca per togliere.",
+                color = Muted, fontSize = 12.sp
+            )
+            Spacer(Modifier.height(8.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(styles, key = { it.key }) { s ->
                     val sel = preset == s.key
                     Surface(
                         shape = RoundedCornerShape(16.dp), color = Card,
                         border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
-                        onClick = { preset = s.key }
+                        onClick = { preset = if (sel) null else s.key }
                     ) {
                         Box(Modifier.size(104.dp, 118.dp)) {
                             Box(Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFF2A1B4E), Color(0xFF141428)))))
@@ -1323,10 +1340,21 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         "9:16 · 480p" to (480 to 854)
     )
     var format by remember { mutableStateOf("16:9 · 720p") }
-    // Max start frame reali: 1 per 16:9, 2 per 9:16 (template H3 verificati).
-    fun maxRefs(): Int = if (format.startsWith("9:16")) 2 else 1
-    // Al cambio formato pota le selezioni in eccesso: niente 2 start su preset da 1.
-    LaunchedEffect(format) { selectedIds = selectedIds.take(maxRefs()).toSet() }
+    // Modalità workflow H3 (verificate con render reali): ognuna ha preset e
+    // requisiti propri. Default i2v, il caso più comune.
+    var mode by remember { mutableStateOf("i2v") }
+    var inputVideoId by remember { mutableStateOf<String?>(null) }
+    fun limitRefs(): Int = when (mode) {
+        "i2v" -> 1
+        "first_last" -> 2
+        "ref2va" -> 4
+        else -> 0  // t2v, v2v: nessuna immagine
+    }
+    // Al cambio modalità pota le selezioni in eccesso e libera il video.
+    LaunchedEffect(mode) {
+        selectedIds = selectedIds.take(limitRefs()).toSet()
+        if (mode != "v2v") inputVideoId = null
+    }
     var duration by remember { mutableStateOf("5 s") }
     var state by remember { mutableStateOf("Pronto") }
     var capsVideo by remember { mutableStateOf<com.hermes.studio.CapTask?>(null) }
@@ -1365,6 +1393,20 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         "Loop" to "loop continuo",
         "Cinematico" to "stile cinematografico"
     )
+    val videoModes = listOf(
+        Triple("i2v", "Immagine → video", Icons.Filled.Image),
+        Triple("first_last", "Primo/ultimo", Icons.Filled.SwapHoriz),
+        Triple("ref2va", "Reference", Icons.Filled.Collections),
+        Triple("t2v", "Solo testo", Icons.Filled.TextFields),
+        Triple("v2v", "Video → video", Icons.Filled.Movie)
+    )
+    fun modeDesc(m: String): String = when (m) {
+        "first_last" -> "Due frame: primo e ultimo. H3 riempie il movimento in mezzo."
+        "ref2va" -> "1-4 immagini di riferimento: personaggi o oggetti ricorrenti."
+        "t2v" -> "Solo testo, nessuna immagine: il video nasce dal prompt."
+        "v2v" -> "Un video della libreria viene riframato in verticale 9:16, con audio."
+        else -> "Un frame iniziale: il video prende vita da lì."
+    }
 
     // URL derivate (anche da cache): video recenti subito visibili.
     LaunchedEffect(recentVideos, loader) {
@@ -1383,7 +1425,7 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             // Caps + video recenti in parallelo.
             val api = repo.api()
             val capsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.capabilities() }
-            val vidsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.assets("video").take(6) }
+            val vidsD = scope.async(kotlinx.coroutines.Dispatchers.IO) { api.assets("video").take(24) }
             capsVideo = capsD.await().video.firstOrNull { it.task == "image-to-video" }
             loader = repo.imageLoader()
             recentVideos = vidsD.await()
@@ -1397,8 +1439,8 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             try {
                 val up = repo.uploadImage(uri)
                 val id = up.asset_id.ifBlank { null } ?: up.asset_upload_id
-                if (selectedIds.size >= maxRefs() && !selectedIds.contains(id)) {
-                    state = "Max ${maxRefs()} start frame: deselezionane uno prima."
+                if (selectedIds.size >= limitRefs() && !selectedIds.contains(id)) {
+                    state = "Max ${limitRefs()} start frame: deselezionane uno prima."
                 } else {
                     selectedIds = selectedIds + id
                     runCatching { repo.api().asset(id) }.getOrNull()?.let { a ->
@@ -1426,44 +1468,132 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             }
         }
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionHeader(Icons.Filled.Image, "Immagine di partenza")
-                Spacer(Modifier.weight(1f))
-                Text("${selectedIds.size}/${maxRefs()}", color = if (selectedIds.isEmpty()) Muted else AccentV, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                if (selectedIds.isEmpty()) "Scegli dal telefono o dalla libreria Hub. 16:9 usa un frame, 9:16 fino a due."
-                else "Start frame selezionati: ${selectedIds.size}.",
-                color = Muted, fontSize = 13.sp
-            )
+            SectionHeader(Icons.Filled.Tune, "Modalità video")
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                RefSourceButton("Da telefono", Icons.Filled.AddPhotoAlternate, Modifier.weight(1f)) {
-                    videoPicker.launch("image/*")
-                }
-                RefSourceButton("Dal server", Icons.Filled.PhotoLibrary, Modifier.weight(1f)) {
-                    pickerOpen = true
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(videoModes, key = { it.first }) { (key, label, icon) ->
+                    val sel = mode == key
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (sel) AccentV.copy(alpha = 0.22f) else Card,
+                        border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
+                        onClick = { mode = key }
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(icon, null, tint = if (sel) AccentV else Muted, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text(label, fontSize = 13.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, maxLines = 1)
+                        }
+                    }
                 }
             }
-            if (selectedIds.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(selectedIds.toList(), key = { it }) { id ->
-                        val req = rememberImgReq(refUrls[id], loader)
-                        Box(Modifier.size(104.dp, 118.dp).clip(RoundedCornerShape(12.dp)).background(Bg)) {
-                            if (req != null && loader != null) {
-                                AsyncImage(
-                                    model = req, imageLoader = loader!!, contentDescription = id,
-                                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
-                                )
+            Spacer(Modifier.height(8.dp))
+            Text(modeDesc(mode), color = Muted, fontSize = 13.sp)
+        }
+        item {
+            when (mode) {
+                "t2v" -> {
+                    SectionHeader(Icons.Filled.TextFields, "Nessuna immagine")
+                    Spacer(Modifier.height(6.dp))
+                    Text("Questa modalità genera il video dal solo prompt.", color = Muted, fontSize = 13.sp)
+                }
+                "v2v" -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionHeader(Icons.Filled.Movie, "Video di partenza")
+                        Spacer(Modifier.weight(1f))
+                        Text("1", color = if (inputVideoId == null) Muted else AccentV, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text("Scegli un video dalla libreria Studio: verrà riframato in 9:16.", color = Muted, fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    if (recentVideos.isEmpty()) {
+                        Text("Nessun video in libreria. Generane uno prima.", color = Muted, fontSize = 13.sp)
+                    } else {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            items(recentVideos, key = { it.id }) { a ->
+                                val sel = inputVideoId == a.id
+                                val req = rememberImgReq(videoUrls[a.id], loader)
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp), color = Card,
+                                    border = BorderStroke(if (sel) 2.dp else 1.dp, if (sel) AccentV else CardBorder),
+                                    onClick = { inputVideoId = if (sel) null else a.id }
+                                ) {
+                                    Box(Modifier.size(160.dp, 120.dp)) {
+                                        if (req != null && loader != null) {
+                                            AsyncImage(
+                                                model = req, imageLoader = loader!!, contentDescription = a.id,
+                                                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                                            )
+                                        }
+                                        Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.55f), modifier = Modifier.align(Alignment.Center)) {
+                                            Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.padding(7.dp).size(20.dp))
+                                        }
+                                        if (sel) {
+                                            Surface(shape = CircleShape, color = AccentV, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)) {
+                                                Icon(Icons.Filled.Check, null, tint = Color.White, modifier = Modifier.size(13.dp))
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                            Surface(
-                                shape = CircleShape, color = Color.Black.copy(alpha = 0.6f),
-                                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
-                                onClick = { selectedIds = selectedIds - id }
-                            ) {
-                                Icon(Icons.Filled.Close, null, tint = Color.White, modifier = Modifier.padding(3.dp).size(13.dp))
+                        }
+                    }
+                }
+                else -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionHeader(
+                            if (mode == "first_last") Icons.Filled.SwapHoriz else Icons.Filled.Image,
+                            when (mode) {
+                                "first_last" -> "Primo e ultimo frame"
+                                "ref2va" -> "Immagini di riferimento"
+                                else -> "Immagine di partenza"
+                            }
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text("${selectedIds.size}/${limitRefs()}", color = if (selectedIds.isEmpty()) Muted else AccentV, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        when {
+                            selectedIds.isEmpty() && mode == "first_last" -> "Servono 2 immagini: il primo e l'ultimo frame."
+                            selectedIds.isEmpty() && mode == "ref2va" -> "1-4 immagini di riferimento da telefono o libreria Hub."
+                            selectedIds.isEmpty() -> "Scegli dal telefono o dalla libreria Hub."
+                            else -> "Selezionate: ${selectedIds.size}."
+                        },
+                        color = Muted, fontSize = 13.sp
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        RefSourceButton("Da telefono", Icons.Filled.AddPhotoAlternate, Modifier.weight(1f)) {
+                            videoPicker.launch("image/*")
+                        }
+                        RefSourceButton("Dal server", Icons.Filled.PhotoLibrary, Modifier.weight(1f)) {
+                            pickerOpen = true
+                        }
+                    }
+                    if (selectedIds.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(selectedIds.toList(), key = { it }) { id ->
+                                val req = rememberImgReq(refUrls[id], loader)
+                                Box(Modifier.size(104.dp, 118.dp).clip(RoundedCornerShape(12.dp)).background(Bg)) {
+                                    if (req != null && loader != null) {
+                                        AsyncImage(
+                                            model = req, imageLoader = loader!!, contentDescription = id,
+                                            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                    Surface(
+                                        shape = CircleShape, color = Color.Black.copy(alpha = 0.6f),
+                                        modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
+                                        onClick = { selectedIds = selectedIds - id }
+                                    ) {
+                                        Icon(Icons.Filled.Close, null, tint = Color.White, modifier = Modifier.padding(3.dp).size(13.dp))
+                                    }
+                                }
                             }
                         }
                     }
@@ -1512,8 +1642,14 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.weight(1f)) { DropDownField("Formato", format, videoFormats.keys.toList(), { format = it }, Icons.Filled.Crop) }
+                if (mode != "v2v") {
+                    Box(Modifier.weight(1f)) { DropDownField("Formato", format, videoFormats.keys.toList(), { format = it }, Icons.Filled.Crop) }
+                }
                 Box(Modifier.weight(1f)) { DropDownField("Durata", duration, listOf("3 s", "5 s", "8 s"), { duration = it }, Icons.Filled.Schedule) }
+            }
+            if (mode == "v2v") {
+                Spacer(Modifier.height(6.dp))
+                Text("Output verticale 9:16 · il video di partenza viene riframato.", color = Muted, fontSize = 12.sp)
             }
         }
         item {
@@ -1525,7 +1661,7 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text("MiniMax H3 turbo", fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("Image-to-video 4-step, preset manager verificato", color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("5 modalità · preset manager verificati", color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(4.dp))
                         StatusPill(if (capsVideo?.enabled == true) "Pronto" else "Non pronto", capsVideo?.enabled == true)
                     }
@@ -1534,20 +1670,32 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             }
         }
         item {
-            val dims = videoFormats[format] ?: (1280 to 720)
+            val dims = if (mode == "v2v") (768 to 1344) else (videoFormats[format] ?: (1280 to 720))
             val durSecs = duration.substringBefore(" ").toDoubleOrNull() ?: 5.0
             val sids = selectedIds.toList()
-            GradientButton("Avvia rendering", Icons.Filled.PlayArrow, enabled = sids.isNotEmpty() && prompt.isNotBlank(), onClick = {
-                if (sids.isEmpty()) return@GradientButton
+            val ready = prompt.isNotBlank() && when (mode) {
+                "i2v" -> sids.size >= 1
+                "first_last" -> sids.size == 2
+                "ref2va" -> sids.isNotEmpty()
+                "v2v" -> inputVideoId != null
+                else -> true
+            }
+            GradientButton("Avvia rendering", Icons.Filled.PlayArrow, enabled = ready, onClick = {
                 state = "Accodamento…"
                 scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     try {
                         val created = repo.api().createJob(
-                            JobCreate("video", prompt, null, "minimax-h3-turbo-4step", null, dims.first, dims.second, 4, null, durSecs, null, sids, "app-v-${System.currentTimeMillis()}-${prompt.hashCode()}")
+                            JobCreate(
+                                "video", prompt, null, "minimax-h3-turbo-4step", null,
+                                dims.first, dims.second, 4, null, durSecs, null, sids,
+                                "app-v-${System.currentTimeMillis()}-${prompt.hashCode()}",
+                                video_mode = mode,
+                                input_video_asset_id = if (mode == "v2v") inputVideoId else null
+                            )
                         )
                         tracked = listOf(created.id)
                         liveJobs = listOf(created)
-                        state = "Rendering avviato (${durSecs.toInt()} s, ${sids.size} start): segui qui sotto."
+                        state = "Rendering avviato (${durSecs.toInt()} s): segui qui sotto."
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
                 }
@@ -1575,7 +1723,7 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
                 Text("Nessun video ancora. Il primo rendering apparirà qui.", color = Muted, fontSize = 13.sp)
             } else {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(recentVideos, key = { it.id }) { a ->
+                    items(recentVideos.take(6), key = { it.id }) { a ->
                         val req = rememberImgReq(videoUrls[a.id], loader)
                         Surface(shape = RoundedCornerShape(14.dp), color = Card, border = BorderStroke(1.dp, CardBorder), onClick = { onOpenAsset("asset/${a.id}") }) {
                             Box(Modifier.size(170.dp, 130.dp)) {
@@ -1606,11 +1754,11 @@ fun CreateVideoScreen(repo: StudioRepo, onOpenAsset: (String) -> Unit, onDone: (
             repo = repo,
             loader = loader,
             selectedIds = selectedIds,
-            maxRefs = maxRefs(),
+            maxRefs = limitRefs(),
             onToggle = { asset, url ->
                 selectedIds = if (selectedIds.contains(asset.id)) {
                     selectedIds - asset.id
-                } else if (selectedIds.size >= maxRefs()) {
+                } else if (selectedIds.size >= limitRefs()) {
                     selectedIds
                 } else {
                     if (url != null) refUrls = refUrls + (asset.id to url)
