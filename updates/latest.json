@@ -5,7 +5,7 @@
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-33/HermesStudio-33.apk",
   "assetSize": 22568572,
   "sha256": "2e8c90d96b6416d610a49ce9b1f4f3ffc0042489ea8a85c2ec61e46efc673dac",
-  "signature": "",
+  "signature": "MEYCIQCTWyZiBhujY68D8HZ87vHHTf6yZ6M/b59RmvO366qjewIhALD8p5kkGRehzDasyzTe7wSo1CrM4RKtKU6DOkzeGYhs",
   "publishedAt": "2026-11-18T00:00:57Z",
   "notes": ["Fix: feed senza BOM UTF-8 + verifica tollerante (BOM rompeva il JSON)", "Audit generale: fix P1 backend (recovery, migration, staging, jail), Android (upload streaming, SSE, ordinamento frame, player), docs e feed firmato"]
 }
