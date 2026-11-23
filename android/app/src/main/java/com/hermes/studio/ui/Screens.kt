@@ -714,7 +714,7 @@ fun CreateImageScreen(
     }
     // Poll leggero dei job di questa schermata: 2s finché qualcuno è attivo.
     LaunchedEffectResumed(tracked) {
-        if (tracked.isEmpty()) return@LaunchedEffect
+        if (tracked.isEmpty()) return@LaunchedEffectResumed
         var misses = 0
         while (true) {
             val js = tracked.mapNotNull { id ->
@@ -1409,7 +1409,7 @@ fun CreateVideoScreen(
     var resultAssets by remember { mutableStateOf<Map<String, Asset>>(emptyMap()) }
     var resultUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
     LaunchedEffectResumed(tracked) {
-        if (tracked.isEmpty()) return@LaunchedEffect
+        if (tracked.isEmpty()) return@LaunchedEffectResumed
         var misses = 0
         while (true) {
             val js = tracked.mapNotNull { id -> runCatching { repo.api().job(id) }.getOrNull() }
