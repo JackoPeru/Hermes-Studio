@@ -137,12 +137,8 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/updates"
           # Retry-safety: non azzerare una firma già completata per lo stesso build.
           if [ -f "${GITHUB_WORKSPACE}/updates/latest.json" ]; then
-            read -r EXIST_CODE EXIST_SIG EXIST_SHA < <(python3 - <<'PY'
-import json
-d = json.load(open("updates/latest.json"))
-print(d.get("versionCode", ""), d.get("signature", ""), d.get("sha256", ""))
-PY
-)
+            EXIST="$(python3 -c 'import json; d=json.load(open("updates/latest.json")); print(d.get("versionCode",""), d.get("signature",""), d.get("sha256",""))')"
+            read -r EXIST_CODE EXIST_SIG EXIST_SHA <<< "$EXIST"
             if [ "$EXIST_CODE" = "${HERMES_VERSION_CODE}" ] && [ -n "$EXIST_SIG" ]; then
               if [ "$EXIST_SHA" = "$APK_SHA" ]; then
                 echo "Feed già firmato per questo build: nessuna modifica."
