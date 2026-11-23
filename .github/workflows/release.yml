@@ -5,13 +5,11 @@ on:
 
 concurrency:
   group: hermes-studio-release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Mai pubblicare da branch diversi da main (il feed pusha su main).
-    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
     env:
@@ -20,6 +18,14 @@ jobs:
       HERMES_KEY_ALIAS: ${{ secrets.HERMES_KEY_ALIAS }}
       HERMES_KEY_PASSWORD: ${{ secrets.HERMES_KEY_PASSWORD }}
     steps:
+      - name: Verify branch (mai pubblicare da branch/tag)
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Release consentita solo da main (ref: $GITHUB_REF)"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v5
         with:
@@ -77,15 +83,37 @@ jobs:
         run: |
           cp android/app/build/outputs/apk/debug/app-debug.apk "HermesStudio-${HERMES_VERSION_CODE}.apk"
 
-      - name: Publish GitHub release (stessa repo, pubblica)
+      - name: Verify signer certificate (stabile)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIGNER="$(ls -1 "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)"
+          test -n "$SIGNER" || { echo "::error::apksigner non trovato"; exit 1; }
+          CERT="$("$SIGNER" verify --print-certs "HermesStudio-${HERMES_VERSION_CODE}.apk" \
+            | grep -i 'certificate SHA-256 digest' | head -1 | awk '{print $NF}')"
+          PINNED="ac67ff51637224c26124bddd39364c65f4e566df3dedd91f9546c17e06e7e0a2"
+          if [ "$(echo "$CERT" | tr 'A-F' 'a-f')" != "$PINNED" ]; then
+            echo "::error::APK firmato con certificato $CERT (atteso $PINNED): secret keystore sbagliato"
+            exit 1
+          fi
+
+      - name: Publish GitHub release (idempotente, sullo SHA buildato)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "studio-${HERMES_VERSION_CODE}" "HermesStudio-${HERMES_VERSION_CODE}.apk" \
-            --title "Hermes Studio ${HERMES_VERSION_NAME} (${HERMES_VERSION_CODE})" \
-            --notes-file /tmp/notes.txt \
-            --latest
+          set -euo pipefail
+          TAG="studio-${HERMES_VERSION_CODE}"
+          APK="HermesStudio-${HERMES_VERSION_CODE}.apk"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+          else
+            gh release create "$TAG" "$APK" \
+              --title "Hermes Studio ${HERMES_VERSION_NAME} (${HERMES_VERSION_CODE})" \
+              --notes-file /tmp/notes.txt \
+              --target "$GITHUB_SHA" \
+              --latest
+          fi
 
       - name: Update same-repo update feed
         shell: bash
@@ -107,6 +135,23 @@ jobs:
           PYEOF
           NOTES_JSON="$(cat /tmp/notes.json)"
           mkdir -p "${GITHUB_WORKSPACE}/updates"
+          # Retry-safety: non azzerare una firma già completata per lo stesso build.
+          if [ -f "${GITHUB_WORKSPACE}/updates/latest.json" ]; then
+            read -r EXIST_CODE EXIST_SIG EXIST_SHA < <(python3 - <<'PY'
+import json
+d = json.load(open("updates/latest.json"))
+print(d.get("versionCode", ""), d.get("signature", ""), d.get("sha256", ""))
+PY
+)
+            if [ "$EXIST_CODE" = "${HERMES_VERSION_CODE}" ] && [ -n "$EXIST_SIG" ]; then
+              if [ "$EXIST_SHA" = "$APK_SHA" ]; then
+                echo "Feed già firmato per questo build: nessuna modifica."
+                exit 0
+              fi
+              echo "::error::Feed già firmato con SHA diverso: intervento manuale richiesto"
+              exit 1
+            fi
+          fi
           cat > "${GITHUB_WORKSPACE}/updates/latest.json" <<EOF
           {
             "versionCode": ${HERMES_VERSION_CODE},
@@ -129,5 +174,6 @@ jobs:
           git add updates/latest.json
           if ! git diff --cached --quiet; then
             git commit -m "Publish update ${HERMES_VERSION_CODE} (firma da completare)"
+            git pull --rebase origin main
             git push origin HEAD:main
           fi

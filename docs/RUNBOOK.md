@@ -2,7 +2,7 @@
 
 ## Avvio
 `set -a; . /etc/hermes/hermes-studio.env; set +a` (include `HERMES_STUDIO_MANAGER_KEY`) poi
-`uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8650`.
+`backend/.venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8650`.
 Token: `HERMES_STUDIO_BEARER` in `/etc/hermes/hermes-studio.env`, altrimenti
 `$DATA/bearer.token` (0600, creato al primo avvio). Vedi `.env.example`.
 

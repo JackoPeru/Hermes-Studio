@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -188,6 +189,15 @@ fun formatDuration(s: Double?): String? {
     if (s == null || s <= 0) return null
     val total = s.toInt()
     return "%d:%02d".format(total / 60, total % 60)
+}
+
+/** Effetto che gira solo con app in primo piano (niente poll in background). */
+@Composable
+fun LaunchedEffectResumed(key: Any?, block: suspend kotlinx.coroutines.CoroutineScope.() -> Unit) {
+    val lc = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(key, lc) {
+        lc.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) { block() }
+    }
 }
 
 // ---------- Job live: segui la generazione senza uscire da Crea ----------
@@ -429,7 +439,7 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
         }
     }
     // Rete di sicurezza: poll leggero ogni 30s (SSE assente o in pausa).
-    LaunchedEffect(Unit) {
+    LaunchedEffectResumed(Unit) {
         while (true) {
             ensureActive()
             kotlinx.coroutines.delay(30000)
@@ -703,7 +713,7 @@ fun CreateImageScreen(
         loader = repo.imageLoader()
     }
     // Poll leggero dei job di questa schermata: 2s finché qualcuno è attivo.
-    LaunchedEffect(tracked) {
+    LaunchedEffectResumed(tracked) {
         if (tracked.isEmpty()) return@LaunchedEffect
         var misses = 0
         while (true) {
@@ -1398,7 +1408,7 @@ fun CreateVideoScreen(
     var liveJobs by remember { mutableStateOf<List<Job>>(emptyList()) }
     var resultAssets by remember { mutableStateOf<Map<String, Asset>>(emptyMap()) }
     var resultUrls by remember { mutableStateOf<Map<String, String?>>(emptyMap()) }
-    LaunchedEffect(tracked) {
+    LaunchedEffectResumed(tracked) {
         if (tracked.isEmpty()) return@LaunchedEffect
         var misses = 0
         while (true) {
@@ -2178,7 +2188,7 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
     }
     // GPU live: refresh ogni 5s finché Impostazioni è visibile (perf: 1 call leggera).
     var gpuFails by remember { mutableStateOf(0) }
-    LaunchedEffect(Unit) {
+    LaunchedEffectResumed(Unit) {
         while (true) {
             ensureActive()
             // Backoff su errori: non spammare rete/batteria se il server è giù.
@@ -2619,7 +2629,7 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
             outUrls = found.associate { a -> a.id to ((repo.assetUrl(a, true) ?: repo.assetUrl(a, false))) }
         } catch (e: Exception) { msg = "Errore: ${e.message}" }
     }
-    LaunchedEffect(jobId) {
+    LaunchedEffectResumed(jobId) {
         while (true) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { load() }
             val st = job?.status

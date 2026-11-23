@@ -12,9 +12,11 @@ EnvironmentFile=-/etc/hermes/hermes-studio.env
 Environment=HERMES_STUDIO_DATA=/var/lib/hermes-studio
 Environment=HERMES_STUDIO_HOST=127.0.0.1
 Environment=HERMES_STUDIO_PORT=8650
-ExecStartPre=/usr/bin/install -d -o matteo -g matteo -m 0700 /var/lib/hermes-studio
-# Best-effort nel sandbox (la dir viene creata sul host al deploy); il '-' ignora fallimenti.
-ExecStartPre=-/usr/bin/install -d -o matteo -g matteo -m 0700 /home/matteo/.hermes/hermes-studio-in
+# systemd crea la data dir (root-owned /var/lib) prima del sandbox, con owner corretti.
+StateDirectory=hermes-studio
+StateDirectoryMode=0700
+# '+' = eseguito come root anche con User=matteo: crea la staging prima del mount namespace.
+ExecStartPre=+/usr/bin/install -d -o matteo -g matteo -m 0700 /home/matteo/.hermes/hermes-studio-in
 ExecStart=/opt/hermes/hermes-studio/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8650
 Restart=on-failure
 RestartSec=5
@@ -27,8 +29,8 @@ ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/var/lib/hermes-studio
 # Staging input video per il manager (root fidata ~/.hermes): scrivibile
-# nonostante ProtectHome (ReadWritePaths ha precedenza).
-ReadWritePaths=/home/matteo/.hermes/hermes-studio-in
+# nonostante ProtectHome. Il '-' tollera la dir assente al primo boot.
+ReadWritePaths=-/home/matteo/.hermes/hermes-studio-in
 # NON abilitare/avviare senza OK esplicito dell'utente.
 
 [Install]

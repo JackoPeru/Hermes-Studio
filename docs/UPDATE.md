@@ -41,12 +41,13 @@ come HermesHub che legge le release dalla propria repo. Niente seconda repo
    usando i valori stampati dal workflow (`MANIFEST-DA-FIRMARE`).
    Note: `base64 -w0` è GNU (su macOS usare `openssl base64 -A`); lo SHA nel
    manifest va in minuscolo (il signer normalizza con `lowercase()`).
-   Verifica **obbligatoria** con l'APK scaricato:
+3. Compila `signature` in `updates/latest.json`, salva il file **UTF-8 senza
+   BOM** (un BOM rompe il parser JSON dell'app), poi verifica con l'APK
+   scaricato:
    `bash scripts/verify-feed.sh updates/latest.json HermesStudio-XX.apk`
    (chiave pinnata in `scripts/feed-pub.pem`, fingerprint `91e247fd…`).
-3. Compila `signature` in `updates/latest.json`, commit + push. Salva il file
-   **UTF-8 senza BOM** (un BOM rompe il parser JSON dell'app e di alcuni tool).
-4. Test: Impostazioni → Controlla ora → Scarica → Installa.
+4. Commit + push di `updates/latest.json`.
+5. Test: Impostazioni → Controlla ora → Scarica → Installa.
 
 ## Versioni (mappa onesta)
 - Backend `0.2.0` (`GET /health`), API stabile `1.0.0`, app `0.1.1-ghN`

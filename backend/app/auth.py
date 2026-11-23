@@ -19,8 +19,8 @@ def _read_token() -> str | None:
     """Legge il token senza crearlo (usato dal percorso auth)."""
     global _cached_token, _cached_mtime
     env = os.environ.get(BEARER_ENV)
-    if env:
-        return env
+    if env and env.strip():
+        return env.strip()
     p = _token_path()
     try:
         mtime = p.stat().st_mtime
@@ -35,18 +35,13 @@ def _read_token() -> str | None:
     _cached_token, _cached_mtime = tok, mtime
     return tok
 
-def get_or_create_token() -> str:
-    tok = _read_token()
-    if tok:
-        return tok
-    global _cached_token, _cached_mtime
+def _write_token(tok: str) -> None:
     p = _token_path()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(DATA_DIR, 0o700)
     except OSError:
         pass
-    tok = secrets.token_urlsafe(32)
     tmp = p.with_suffix(f".{secrets.token_hex(6)}.tmp")
     # O_EXCL + mode 0600: il segreto non è mai leggibile da altri, nemmeno
     # nella finestra prima del rename atomico.
@@ -58,6 +53,27 @@ def get_or_create_token() -> str:
         os.chmod(p, 0o600)
     except OSError:
         pass
+
+
+def get_or_create_token() -> str:
+    global _cached_token, _cached_mtime
+    env = (os.environ.get(BEARER_ENV) or "").strip()
+    p = _token_path()
+    if env:
+        # Tieni il file allineato all'env: se l'env viene rimosso in futuro,
+        # non deve tornare valido un vecchio token dimenticato.
+        try:
+            cur = p.read_text().strip()
+        except OSError:
+            cur = ""
+        if cur != env:
+            _write_token(env)
+        return env
+    tok = _read_token()
+    if tok:
+        return tok
+    tok = secrets.token_urlsafe(32)
+    _write_token(tok)
     try:
         _cached_mtime = p.stat().st_mtime
     except OSError:

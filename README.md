@@ -15,7 +15,7 @@ App Android nativa (Kotlin+Compose, Material3) + backend privato (FastAPI) per g
 - Ritocco immagini (preset edit Qwen con start frame), upload foto dal telefono indicizzate in libreria.
 - Video: durate 3/5/8s, formati 720p/480p; player in-app, durate reali ovunque.
 - Quadro GPU live in Impostazioni, pulizia cronologia, note release generate dai commit dal tag precedente.
-- SSE live (`GET /events` + fallback poll 15s) invece di polling cieco; niente recompose a vuoto, request Coil stabili, ricerca Libreria client-side.
+- SSE live (`GET /events` + fallback poll 30s) invece di polling cieco; niente recompose a vuoto, request Coil stabili, ricerca Libreria client-side.
 - `DELETE /api/v1/assets/{id}` + `GET /api/v1/assets/{id}` con test.
 
 ## Prerequisiti

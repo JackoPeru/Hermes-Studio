@@ -19,7 +19,11 @@ def main() -> int:
         print("uso: verify_feed.py feed.json app.apk public.pem", file=sys.stderr)
         return 2
     feed_path, apk_path, pubkey = sys.argv[1:4]
-    feed = json.loads(Path(feed_path).read_text(encoding="utf-8-sig"))
+    raw = Path(feed_path).read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        print("feed con BOM UTF-8: l'app lo rifiuta, riscrivilo senza BOM", file=sys.stderr)
+        return 1
+    feed = json.loads(raw.decode("utf-8"))
     for key in ("versionCode", "versionName", "apkUrl", "assetSize", "sha256", "signature"):
         if not feed.get(key):
             print(f"campo mancante/vuoto: {key}", file=sys.stderr)
@@ -53,7 +57,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         mf = Path(tmp) / "manifest.txt"
         sg = Path(tmp) / "signature.bin"
-        mf.write_text(manifest, encoding="utf-8")
+        # write_bytes: mai traduzione \n -> \r\n su Windows (Kotlin usa LF).
+        mf.write_bytes(manifest.encode("utf-8"))
         sg.write_bytes(signature)
         r = subprocess.run(
             ["openssl", "dgst", "-sha256", "-verify", pubkey,
