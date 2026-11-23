@@ -5,7 +5,7 @@
   "apkUrl": "https://github.com/JackoPeru/Hermes-Studio/releases/download/studio-36/HermesStudio-36.apk",
   "assetSize": 22568576,
   "sha256": "16c5cbb655e2e409c3c4d354160579fe09014ceec58f7bba165a7962ece9fba4",
-  "signature": "",
+  "signature": "MEQCIHmsTg0dCPeCmE1vVtNC/H72oimDb7dKKiYFcOAUHRBzAiB4qRoSXWuoY5KOVg+wLMthAUVQFA3t5GIcKacuW7NlUA==",
   "publishedAt": "2026-11-23T19:12:07Z",
   "notes": ["Fix YAML release workflow (heredoc indent)", "Fix: label LaunchedEffectResumed", "Audit-2 ops/Android: feed LF/BOM verifier, release idempotente+firma APK, unit fresh-host, poll lifecycle, player/picker fixes", "Audit-2: recovery con mid, staging/prune race, idempotenza vuota, manager retry, thumb video, upload/SSE/client Android"]
 }
