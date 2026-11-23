@@ -374,16 +374,32 @@ class AppUpdateManager(private val appContext: Context) {
     private fun verifyApkSignatureMatchesInstalled(file: File): String? {
         return try {
             val pm = appContext.packageManager
-            val archive = pm.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)
-                ?: return "Impossibile leggere la firma dell'APK scaricato."
-            val archiveSigners = archive.signingInfo?.apkContentsSigners?.map { it.toByteArray().sha256Hex() }.orEmpty()
+            val archive = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pm.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_SIGNATURES)
+            } ?: return "Impossibile leggere la firma dell'APK scaricato."
+            val archiveSigners = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                archive.signingInfo?.apkContentsSigners?.map { it.toByteArray().sha256Hex() }.orEmpty()
+            } else {
+                @Suppress("DEPRECATION")
+                archive.signatures?.map { it.toByteArray().sha256Hex() }.orEmpty()
+            }
             if (archiveSigners.isEmpty()) return "APK scaricato senza firma."
             val installed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 pm.getPackageInfo(appContext.packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_SIGNING_CERTIFICATES.toLong()))
-            } else {
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 @Suppress("DEPRECATION") pm.getPackageInfo(appContext.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION") pm.getPackageInfo(appContext.packageName, PackageManager.GET_SIGNATURES)
             }
-            val installedSigners = installed.signingInfo?.apkContentsSigners?.map { it.toByteArray().sha256Hex() }.orEmpty()
+            val installedSigners = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                installed.signingInfo?.apkContentsSigners?.map { it.toByteArray().sha256Hex() }.orEmpty()
+            } else {
+                @Suppress("DEPRECATION")
+                installed.signatures?.map { it.toByteArray().sha256Hex() }.orEmpty()
+            }
             if (archiveSigners.any { it in installedSigners }) null else "APK con firma diversa dallo sviluppatore installato: installazione bloccata."
         } catch (t: Throwable) { "Verifica firma APK fallita: ${t.message ?: "errore"}." }
     }
@@ -499,10 +515,14 @@ class AppUpdateManager(private val appContext: Context) {
     class UpdateCheckWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
         override suspend fun doWork(): Result {
             if (runAttemptCount >= 3) return Result.failure()
-            return runCatching {
+            return try {
                 (applicationContext as? UpdateManagerProvider)?.appUpdateManager()?.runBackgroundSync()
                 Result.success()
-            }.getOrElse { Result.retry() }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                Result.retry()
+            }
         }
     }
 

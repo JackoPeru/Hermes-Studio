@@ -17,6 +17,7 @@ def client(tmp_path, monkeypatch):
     cfg.ASSETS_DIR = data / "assets"
     cfg.THUMBS_DIR = data / "thumbs"
     cfg.UPLOADS_DIR = data / "uploads"
+    cfg.STAGING_DIR = data / "staging"
     cfg.DB_PATH = data / "studio.db"
     import importlib
     import app.db as dbmod
@@ -441,26 +442,26 @@ async def test_recovery_requeues_and_cancels(client):
     import app.main as m
     cx = dbmod.connect()
     try:
-        for jid, st in [("rec-prep", "preparing"), ("rec-run", "running"),
-                        ("rec-run-mid", "running"), ("rec-canc", "cancelling")]:
+        for jid, st, mid in [("rec-prep", "preparing", None), ("rec-prep-mid", "preparing", "mid-z"),
+                             ("rec-run", "running", None),
+                             ("rec-run-mid", "running", "mid-x"), ("rec-canc", "cancelling", "mid-orphan")]:
             cx.execute(
                 "INSERT INTO jobs(id,task_type,status,engine,model,prompt,params,comfy_prompt_id,created_at,updated_at)"
                 " VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (jid, "image", st, "e", "m", "p", "{}",
-                 "mid-orphan" if jid == "rec-canc" else ("mid-x" if jid == "rec-run-mid" else None),
+                (jid, "image", st, "e", "m", "p", "{}", mid,
                  dbmod.now(), dbmod.now()))
         cx.commit()
     finally:
         cx.close()
     out = await m._recover_once()
-    assert out["requeued"] == 2 and out["failed_submit"] == 1 and out["cancelled"] == 1
+    assert out["requeued"] == 3 and out["failed_submit"] == 1 and out["cancelled"] == 1
     assert out["cancel_mids"] == ["mid-orphan"]
     cx = dbmod.connect()
     try:
         got = {r[0]: r[1] for r in cx.execute("SELECT id,status FROM jobs WHERE id LIKE 'rec-%'").fetchall()}
     finally:
         cx.close()
-    assert got == {"rec-prep": "failed", "rec-run": "queued",
+    assert got == {"rec-prep": "failed", "rec-prep-mid": "queued", "rec-run": "queued",
                    "rec-run-mid": "queued", "rec-canc": "cancelled"}
 
 @pytest.mark.asyncio
@@ -695,4 +696,13 @@ def test_migrate_legacy_db(client, tmp_path, monkeypatch):
         cx.close()
     assert {"idempotency_key", "phase"} <= jcols
     assert {"duration", "job_id"} <= acols
+
+
+def test_empty_idempotency_key_never_500(client):
+    body = {"taskType": "image", "prompt": "x", "idempotency_key": ""}
+    r1 = client.post("/api/v1/jobs", json=body)
+    r2 = client.post("/api/v1/jobs", json=body)
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+    assert r1.json()["id"] != r2.json()["id"]
 

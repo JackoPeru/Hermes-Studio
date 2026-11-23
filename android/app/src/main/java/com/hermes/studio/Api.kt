@@ -111,11 +111,10 @@ class StudioRepo(private val ctx: Context) {
         b.toHttpUrl()
         ctx.store.edit { it[KEY_BASE] = b; it[KEY_TOKEN] = token.trim() }
         cachedApi = null; cachedLoader = null
-        cachedClient?.let {
-            runCatching { it.dispatcher.executorService.shutdown() }
-            it.connectionPool.evictAll()
-        }
+        // Mai spegnere il client vecchio: loader/SSE già in volo lo stanno usando.
+        // Si azzera il riferimento e i nuovi usi ne creano uno aggiornato.
         cachedClient = null; clientKey = ""
+        memJobs = null; memAssets = null; memCaps = null
     }
 
     private fun buildClient(tok: String): OkHttpClient =
@@ -133,7 +132,7 @@ class StudioRepo(private val ctx: Context) {
         val base = baseUrl()
         val tok = token()
         if (cachedApi != null && base == cachedBase && tok == cachedToken) return cachedApi!!
-        val cli = buildClient(tok)
+        val cli = authedClient()
         val api = Retrofit.Builder().baseUrl(base).client(cli)
             .addConverterFactory(MoshiConverterFactory.create(moshi)).build()
             .create(StudioApi::class.java)
@@ -172,6 +171,24 @@ class StudioRepo(private val ctx: Context) {
     suspend fun testConnection(): String {
         api().capabilities()
         return baseUrl()
+    }
+
+    /** Test di un candidato PRIMA di salvarlo: un URL rotto non sovrascrive la config buona. */
+    suspend fun testConnection(candidateBase: String, candidateToken: String): String {
+        var b = candidateBase.trim()
+        if (!b.endsWith("/")) b += "/"
+        b.toHttpUrl()
+        val cli = buildClient(candidateToken.trim())
+        try {
+            val api = Retrofit.Builder().baseUrl(b).client(cli)
+                .addConverterFactory(MoshiConverterFactory.create(moshi)).build()
+                .create(StudioApi::class.java)
+            api.capabilities()
+            return b
+        } finally {
+            runCatching { cli.dispatcher.executorService.shutdown() }
+            cli.connectionPool.evictAll()
+        }
     }
 
     suspend fun authedClient(): OkHttpClient {
@@ -236,32 +253,36 @@ class StudioRepo(private val ctx: Context) {
     suspend fun downloadToCache(a: Asset): java.io.File = withContext(Dispatchers.IO) {
         val url = absoluteUrl(a.path) ?: throw IllegalStateException("URL asset mancante")
         val dir = java.io.File(ctx.cacheDir, "hermes-share").apply { mkdirs() }
-        // Nome provvisorio: estensione vera dal Content-Type di risposta.
-        val tmp = java.io.File(dir, a.id + ".bin")
+        // Nome provvisorio unico: share+save concorrenti non si pestano i piedi.
+        val tmp = java.io.File(dir, "${a.id}-${System.nanoTime()}.bin")
         var ext = if (a.kind == "video") ".mp4" else ".jpg"
-        authedClient().newCall(Request.Builder().url(url).build()).execute().use { r ->
-            if (!r.isSuccessful) throw IllegalStateException("Download fallito (${r.code})")
-            ext = when {
-                (r.header("Content-Type") ?: "").contains("png") -> ".png"
-                (r.header("Content-Type") ?: "").contains("webp") -> ".webp"
-                (r.header("Content-Type") ?: "").contains("mp4") -> ".mp4"
-                (r.header("Content-Type") ?: "").contains("webm") -> ".webm"
-                a.kind == "video" -> ".mp4"
-                else -> ".jpg"
+        try {
+            authedClient().newCall(Request.Builder().url(url).build()).execute().use { r ->
+                if (!r.isSuccessful) throw IllegalStateException("Download fallito (${r.code})")
+                ext = when {
+                    (r.header("Content-Type") ?: "").contains("png") -> ".png"
+                    (r.header("Content-Type") ?: "").contains("webp") -> ".webp"
+                    (r.header("Content-Type") ?: "").contains("mp4") -> ".mp4"
+                    (r.header("Content-Type") ?: "").contains("webm") -> ".webm"
+                    a.kind == "video" -> ".mp4"
+                    else -> ".jpg"
+                }
+                val body = r.body ?: throw IllegalStateException("Risposta vuota")
+                body.byteStream().use { input ->
+                    tmp.outputStream().use { input.copyTo(it) }
+                }
             }
-            val body = r.body ?: throw IllegalStateException("Risposta vuota")
-            body.byteStream().use { input ->
-                tmp.outputStream().use { input.copyTo(it) }
+            val out = java.io.File(dir, a.id + ext)
+            if (out.exists()) out.delete()
+            if (!tmp.renameTo(out)) {
+                // renameTo può fallire: fallback copia (stessi permessi cache).
+                tmp.copyTo(out, overwrite = true)
+                tmp.delete()
             }
+            out
+        } finally {
+            if (tmp.exists()) tmp.delete()
         }
-        val out = java.io.File(dir, a.id + ext)
-        if (out.exists()) out.delete()
-        if (!tmp.renameTo(out)) {
-            // renameTo può fallire: fallback copia (stessi permessi cache).
-            tmp.copyTo(out, overwrite = true)
-            tmp.delete()
-        }
-        out
     }
 
     fun shareFile(file: java.io.File, kind: String): android.content.Intent {

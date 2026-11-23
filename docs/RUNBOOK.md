@@ -25,13 +25,19 @@ Token: `HERMES_STUDIO_BEARER` in `/etc/hermes/hermes-studio.env`, altrimenti
   `cancelling→cancelled` con cancel al manager.
 - Cancel: `queued→cancelled` subito; `running/preparing→cancelling`, il worker
   propaga `POST /jobs/{mid}/cancel` al manager.
-- Video (H3 turbo): poll manager ogni 5s (timeout 90min); 5 modalità
+- Video (H3 turbo): poll manager ogni 10s (timeout 90min); 5 modalità
   (`video_mode`), durate 3/5/8s via `duration`. Se il manager è in coda dietro
   altri job, il job resta `running`: è normale.
 
 ## Manager / Comfy
 - Mai `kill/reset`: solo `GET /status`, submit e cancel via `ManagerClient`
   (ruolo app, `app.key` — mai full-control).
+- Preset richiesti dalle modalità video Studio: `journey_video_preview`,
+  `journey_video_preview_chained`, `journey_video_preview_ref2va`,
+  `journey_video_t2v`, `journey_video_reframe916`. Verifica:
+  `sudo grep -o '"journey_video_[a-z0-9_]*"' /opt/hermes/gpu-manager/manager.py | sort -u`
+  (`journey_video_t2v` usa `h3/t2v-turbo.json`). Se il repo HermesHub è più
+  vecchio del deploy, riallineare prima di un redeploy del manager.
 - Se il manager rifiuta (coda piena, preset ignoto, input fuori root fidate):
   job → `failed` con `manager submit failed: ...`, da riaccodare.
 

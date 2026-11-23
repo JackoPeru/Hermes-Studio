@@ -62,10 +62,13 @@ class MainActivity : ComponentActivity() {
                 }
                 Scaffold(
                     topBar = {
-                        var label by remember { mutableStateOf("") }
-                        LaunchedEffect(Unit) {
-                            label = try { repo.baseUrl().substringAfter("://").substringBefore("/") }
-                            catch (_: Exception) { "" }
+                        // Rilettura periodica: dopo un cambio server il nome host non resta vecchio.
+                        val label by produceState("") {
+                            while (true) {
+                                value = try { repo.baseUrl().substringAfter("://").substringBefore("/") }
+                                catch (_: Exception) { "" }
+                                kotlinx.coroutines.delay(3000)
+                            }
                         }
                         HermesTopBar(online, label) {
                             scope.launch {

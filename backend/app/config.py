@@ -26,6 +26,10 @@ MANAGER_KEY = os.environ.get("HERMES_STUDIO_MANAGER_KEY", "")
 
 MAX_UPLOAD_MB = int(os.environ.get("HERMES_STUDIO_MAX_UPLOAD_MB", "25"))
 
+# Staging input per il manager (root fidata E scrivibile dalla unit systemd).
+STAGING_DIR = Path(os.environ.get(
+    "HERMES_STUDIO_STAGING_DIR", str(Path.home() / ".hermes" / "hermes-studio-in"))).resolve()
+
 # Cartella immagini condivisa con Hermes Hub: stessa root della sua libreria
 # (default ~/.hermes/hub_uploads, con eventuali sottocartelle).
 LIBRARY_ROOT = Path(os.environ.get(

@@ -385,8 +385,10 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
         var cancelled = false
         val task = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             while (!cancelled) {
+                val closed = kotlinx.coroutines.CompletableDeferred<Unit>()
+                var source: okhttp3.sse.EventSource? = null
                 try {
-                    val es = repo.watchEvents(object : okhttp3.sse.EventSourceListener() {
+                    source = repo.watchEvents(object : okhttp3.sse.EventSourceListener() {
                         override fun onOpen(e: okhttp3.sse.EventSource, response: okhttp3.Response) {
                             scope.launch { live = true }
                         }
@@ -400,14 +402,21 @@ fun HomeScreen(repo: StudioRepo, onNav: (String) -> Unit) {
                         }
                         override fun onFailure(e: okhttp3.sse.EventSource, t: Throwable?, r: okhttp3.Response?) {
                             scope.launch { live = false }
-                            if (esRef === e) esRef = null
+                            if (!closed.isCompleted) closed.complete(Unit)
+                        }
+                        override fun onClosed(e: okhttp3.sse.EventSource) {
+                            if (!closed.isCompleted) closed.complete(Unit)
                         }
                     })
-                    esRef = es
-                    // Attende la chiusura (onFailure azzera esRef), poi riconnette.
-                    while (!cancelled && esRef === es) kotlinx.coroutines.delay(1000)
+                    esRef = source
+                    closed.await()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     scope.launch { live = false }
+                } finally {
+                    try { source?.cancel() } catch (_: Exception) {}
+                    if (esRef === source) esRef = null
                 }
                 if (!cancelled) kotlinx.coroutines.delay(5000)
             }
@@ -661,6 +670,8 @@ fun CreateImageScreen(
     var count by rememberSaveable { mutableStateOf(1) }
     var state by remember { mutableStateOf("Pronto") }
     var submitting by remember { mutableStateOf(false) }
+    // Chiave stabile per batch: un retry dopo rotazione non duplica i job.
+    var batchId by rememberSaveable { mutableStateOf(java.util.UUID.randomUUID().toString()) }
     // Fino a 10 riferimenti: il nodo Qwen 2.1 accetta image_1..image_16,
     // template e manager ora ne collegano 10 (oltre: serve più VRAM).
     val maxRefs = 10
@@ -694,12 +705,17 @@ fun CreateImageScreen(
     // Poll leggero dei job di questa schermata: 2s finché qualcuno è attivo.
     LaunchedEffect(tracked) {
         if (tracked.isEmpty()) return@LaunchedEffect
+        var misses = 0
         while (true) {
             val js = tracked.mapNotNull { id ->
                 runCatching { repo.api().job(id) }.getOrNull()
             }
             if (js.isNotEmpty()) liveJobs = js
-            if (js.size == tracked.size && js.all { it.status in setOf("completed", "failed", "cancelled") }) break
+            misses = if (js.size < tracked.size) misses + 1 else 0
+            val terminal = js.all { it.status in setOf("completed", "failed", "cancelled") }
+            if (js.size == tracked.size && terminal) break
+            if (js.isNotEmpty() && terminal && misses >= 6) break
+            if (js.isEmpty() && misses >= 6) break
             kotlinx.coroutines.delay(2000)
         }
     }
@@ -952,13 +968,14 @@ fun CreateImageScreen(
                         val api = repo.api()
                         tracked = emptyList(); liveJobs = emptyList()
                         repeat(count) {
-                            val j = api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, null, preset.takeIf { it.isNotBlank() }, refs, "app-${System.currentTimeMillis()}-$it-${prompt.hashCode()}"))
+                            val j = api.createJob(JobCreate("image", prompt, null, null, null, sel.second, sel.third, steps, null, null, preset.takeIf { it.isNotBlank() }, refs, "app-$batchId-$it-${prompt.hashCode()}"))
                             // Aggiorna subito: se il batch si interrompe, i job
                             // già accettati restano visibili e tracciati.
                             tracked = tracked + j.id
                             liveJobs = liveJobs + j
                         }
                         state = (if (isEdit) "Ritocco" else "Generazione") + " avviata (${sel.second}×${sel.third}, $steps passi): segui qui sotto."
+                        batchId = java.util.UUID.randomUUID().toString()
                         refreshRecent()
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
@@ -1373,6 +1390,7 @@ fun CreateVideoScreen(
     var duration by rememberSaveable { mutableStateOf("5 s") }
     var state by remember { mutableStateOf("Pronto") }
     var submitting by remember { mutableStateOf(false) }
+    var batchId by rememberSaveable { mutableStateOf(java.util.UUID.randomUUID().toString()) }
     var capsVideo by remember { mutableStateOf<com.hermes.studio.CapTask?>(null) }
     var loader by remember { mutableStateOf<coil.ImageLoader?>(null) }
     // Job lanciato da qui: seguito in schermata, risultato visibile subito.
@@ -1387,10 +1405,12 @@ fun CreateVideoScreen(
             val js = tracked.mapNotNull { id -> runCatching { repo.api().job(id) }.getOrNull() }
             if (js.isNotEmpty()) liveJobs = js
             misses = if (js.size < tracked.size) misses + 1 else 0
-            if (js.size == tracked.size && js.all { it.status in setOf("completed", "failed", "cancelled") }) break
-            // Job sparito dal server (prune) o rete giù: smetti, la verità
-            // resta sul server e si rilegge riaprendo la schermata.
-            if (misses >= 6) break
+            val terminal = js.all { it.status in setOf("completed", "failed", "cancelled") }
+            if (js.size == tracked.size && terminal) break
+            // Un id sparito dal server (prune) non deve bloccare gli altri:
+            // dopo ~12s mostra i risultati dei job ancora presenti.
+            if (js.isNotEmpty() && terminal && misses >= 6) break
+            if (js.isEmpty() && misses >= 6) break
             kotlinx.coroutines.delay(2000)
         }
     }
@@ -1455,22 +1475,24 @@ fun CreateVideoScreen(
     LaunchedEffect(Unit) { refresh() }
     val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
+        if (limitRefs() == 0) {
+            state = "Questa modalità non usa immagini."
+            return@rememberLauncherForActivityResult
+        }
+        if (selectedIds.size >= limitRefs()) {
+            state = "Max ${limitRefs()} start frame: deselezionane uno prima."
+            return@rememberLauncherForActivityResult
+        }
         state = "Caricamento foto…"
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val up = repo.uploadImage(uri)
                 val id = up.asset_id.ifBlank { null } ?: up.asset_upload_id
-                if (limitRefs() == 0) {
-                    state = "Questa modalità non usa immagini."
-                } else if (selectedIds.size >= limitRefs() && !selectedIds.contains(id)) {
-                    state = "Max ${limitRefs()} start frame: deselezionane uno prima."
-                } else {
-                    selectedIds = selectedIds + id
-                    runCatching { repo.api().asset(id) }.getOrNull()?.let { a ->
-                        refUrls = refUrls + (id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)))
-                    }
-                    state = "Foto caricata e selezionata."
+                selectedIds = selectedIds + id
+                runCatching { repo.api().asset(id) }.getOrNull()?.let { a ->
+                    refUrls = refUrls + (id to (repo.assetUrl(a, true) ?: repo.assetUrl(a, false)))
                 }
+                state = "Foto caricata e selezionata."
             } catch (e: Exception) { state = "Upload fallito: ${e.message}" }
         }
     }
@@ -1525,8 +1547,7 @@ fun CreateVideoScreen(
                 }
                 "v2v" -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SectionHeader(Icons.Filled.Movie, "Video di partenza")
-                        Spacer(Modifier.weight(1f))
+                        Box(Modifier.weight(1f)) { SectionHeader(Icons.Filled.Movie, "Video di partenza") }
                         Text("1", color = if (inputVideoId == null) Muted else AccentV, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Spacer(Modifier.height(6.dp))
@@ -1567,15 +1588,16 @@ fun CreateVideoScreen(
                 }
                 else -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SectionHeader(
-                            if (mode == "first_last") Icons.Filled.SwapHoriz else Icons.Filled.Image,
-                            when (mode) {
-                                "first_last" -> "Primo e ultimo frame"
-                                "ref2va" -> "Immagini di riferimento"
-                                else -> "Immagine di partenza"
-                            }
-                        )
-                        Spacer(Modifier.weight(1f))
+                        Box(Modifier.weight(1f)) {
+                            SectionHeader(
+                                if (mode == "first_last") Icons.Filled.SwapHoriz else Icons.Filled.Image,
+                                when (mode) {
+                                    "first_last" -> "Primo e ultimo frame"
+                                    "ref2va" -> "Immagini di riferimento"
+                                    else -> "Immagine di partenza"
+                                }
+                            )
+                        }
                         Text("${selectedIds.size}/${limitRefs()}", color = if (selectedIds.isEmpty()) Muted else AccentV, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Spacer(Modifier.height(6.dp))
@@ -1729,7 +1751,7 @@ fun CreateVideoScreen(
                             JobCreate(
                                 "video", prompt, null, "minimax-h3-turbo-4step", null,
                                 dims.first, dims.second, 4, null, durSecs, null, sids,
-                                "app-v-${System.currentTimeMillis()}-${prompt.hashCode()}",
+                                "app-v-$batchId-${prompt.hashCode()}",
                                 video_mode = mode,
                                 input_video_asset_id = if (mode == "v2v") inputVideoId else null
                             )
@@ -1737,6 +1759,7 @@ fun CreateVideoScreen(
                         tracked = listOf(created.id)
                         liveJobs = listOf(created)
                         state = "Rendering avviato (${durSecs.toInt()} s): segui qui sotto."
+                        batchId = java.util.UUID.randomUUID().toString()
                         onDone?.invoke()
                     } catch (e: Exception) { state = "Errore: ${e.message}" }
                     finally { submitting = false }
@@ -1842,10 +1865,10 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
     // Serializza i toggle: tap rapidi non devono perdersi/ribaltarsi.
     val favMutex = remember { Mutex() }
     // Richieste concorrenti: vince solo l'ultima partita (niente griglia stantia).
-    var reloadSeq by remember { mutableStateOf(0) }
+    val reloadSeq = remember { java.util.concurrent.atomic.AtomicInteger(0) }
 
     suspend fun reload() {
-        val my = ++reloadSeq
+        val my = reloadSeq.incrementAndGet()
         try {
             // Un solo giro di rete: lista intera + preferiti + progetti in parallelo.
             val api = repo.api()
@@ -1862,10 +1885,14 @@ fun LibraryScreen(repo: StudioRepo, onAsset: (String) -> Unit, onReuse: (String)
                 try { api.projects() } catch (_: Exception) { emptyList() }
             }
             val all = allD.await()
-            if (my != reloadSeq) return
+            if (my != reloadSeq.get()) return
             if (all != assets) { assets = all; repo.memAssets = all }
-            favIds = favD.await()
-            projects = prjD.await()
+            val favs = favD.await()
+            if (my != reloadSeq.get()) return
+            favIds = favs
+            val prjs = prjD.await()
+            if (my != reloadSeq.get()) return
+            projects = prjs
             loader = repo.imageLoader()
             err = null
         } catch (e: Exception) { err = e.message }
@@ -2200,10 +2227,10 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
                                         return@launch
                                     }
                                 }
-                                repo.save(base, tok)
-                                repo.testConnection()
+                                val normalized = repo.testConnection(base, tok)
+                                repo.save(normalized, tok)
                                 refreshSystem()
-                                msg = "Connessione OK (capabilities autenticate)."
+                                msg = "Connessione OK (capabilities autenticate) su $normalized."
                             } catch (e: Exception) { msg = "Errore: ${e.message}" }
                         }
                     })
@@ -2241,8 +2268,7 @@ fun SettingsScreen(repo: StudioRepo, updater: AppUpdateManager) {
             Surface(shape = CardShape, color = Card, border = BorderStroke(1.dp, CardBorder)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SectionHeader(Icons.Filled.Memory, "GPU server")
-                        Spacer(Modifier.weight(1f))
+                        Box(Modifier.weight(1f)) { SectionHeader(Icons.Filled.Memory, "GPU server") }
                         if (gpuLive) Text("· Live", color = Good, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         IconButton(onClick = { scope.launch(kotlinx.coroutines.Dispatchers.IO) { refreshSystem(false) } }, modifier = Modifier.size(32.dp)) {
                             Icon(Icons.Filled.Refresh, "Aggiorna GPU", tint = AccentV, modifier = Modifier.size(18.dp))
@@ -2626,18 +2652,21 @@ fun JobDetailScreen(repo: StudioRepo, jobId: String, onReusePrompt: (String) -> 
                             },
                             color = Muted, fontSize = 13.sp
                         )
-                        if (j.phase == "executing" || j.phase == "saving" || j.progress == null) {
-                            LinearProgressIndicator(
-                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
-                                color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
-                            )
-                            Text(phaseLabel(j), color = Muted, fontSize = 12.sp)
-                        } else {
-                            LinearProgressIndicator(
-                                progress = { ((j.progress ?: 0.0).toFloat()).coerceIn(0f, 1f) },
-                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
-                                color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
-                            )
+                        val active = j.status in setOf("queued", "preparing", "running", "cancelling")
+                        if (active) {
+                            if (j.phase == "executing" || j.phase == "saving" || j.progress == null) {
+                                LinearProgressIndicator(
+                                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                                    color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
+                                )
+                                Text(phaseLabel(j), color = Muted, fontSize = 12.sp)
+                            } else {
+                                LinearProgressIndicator(
+                                    progress = { ((j.progress ?: 0.0).toFloat()).coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                                    color = AccentV, trackColor = Color.White.copy(alpha = 0.12f)
+                                )
+                            }
                         }
                         if (!j.error.isNullOrBlank()) Text(j.error!!.take(300), color = Warn, fontSize = 13.sp)
                         if (msg.isNotBlank()) Text(msg, color = Warn, fontSize = 13.sp)
@@ -2823,6 +2852,7 @@ fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier
                         useController = false
                     }
                 },
+                update = { view -> view.player = current },
                 modifier = Modifier.fillMaxSize()
             )
         } else {
@@ -2831,7 +2861,7 @@ fun VideoPlayerBox(repo: StudioRepo, asset: Asset, modifier: Modifier = Modifier
             }
         }
         // Controller nostro: solo controlli veri (play/pausa + seek + tempi).
-        if (current != null && ready) {
+        if (current != null && (ready || ended)) {
             Surface(
                 shape = CircleShape, color = Color.Black.copy(alpha = 0.55f),
                 modifier = Modifier.align(Alignment.Center),

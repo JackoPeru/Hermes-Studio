@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import time
 import uuid
+import logging
 from .config import DB_PATH
 
 SCHEMA = """
@@ -83,8 +84,9 @@ def _migrate(cx: sqlite3.Connection) -> None:
     ):
         try:
             cx.execute(stmt)
-        except (sqlite3.IntegrityError, sqlite3.OperationalError):
-            pass
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
+            logging.getLogger("hermes-studio.db").warning(
+                "indice non creato (duplicati esistenti?): %s", exc)
 
 
 def connect() -> sqlite3.Connection:

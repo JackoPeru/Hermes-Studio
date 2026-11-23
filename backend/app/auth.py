@@ -47,7 +47,7 @@ def get_or_create_token() -> str:
     except OSError:
         pass
     tok = secrets.token_urlsafe(32)
-    tmp = p.with_suffix(f".{os.getpid()}.tmp")
+    tmp = p.with_suffix(f".{secrets.token_hex(6)}.tmp")
     # O_EXCL + mode 0600: il segreto non è mai leggibile da altri, nemmeno
     # nella finestra prima del rename atomico.
     fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)

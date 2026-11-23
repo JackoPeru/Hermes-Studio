@@ -26,7 +26,7 @@ Tutto sotto è rilevato via SSH read-only su `hermes`, non ipotizzato.
 3. Worker: risolve lo start frame su disco → `POST manager /jobs/video
    {preset, parameters: {prompt, input_images: [abs], width, height, seed}}`
    (ruolo app, `app.key` — niente bypass del manager).
-4. Poll manager `GET /jobs/{mid}` ogni 5s (max 90min); cancel → `POST .../cancel`.
+4. Poll manager `GET /jobs/{mid}` ogni 10s (max 90min); cancel → `POST .../cancel`.
 5. Done: copia il derivato `.h264.mp4` (generato dal manager) o converte con ffmpeg,
    `ffprobe` per durata/risoluzione, thumbnail a 0.5s, asset `kind=video` + `duration`.
 
